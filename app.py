@@ -14,10 +14,9 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 注入手機端高觸感 CSS (加大按鈕點擊區域、直覺卡片化)
+# 注入手機端高觸感 CSS (大按鈕、防誤觸、直覺卡片)
 st.markdown("""
 <style>
-    /* 手機按鈕大尺寸、大字體與微圓角 */
     div.stButton > button {
         width: 100%;
         height: 3.2rem;
@@ -27,13 +26,11 @@ st.markdown("""
         margin-bottom: 0.25rem;
         transition: all 0.15s ease-in-out;
     }
-    /* 輸入框適配手指高度 */
     div.stTextInput > div > div > input {
         height: 3rem !important;
         font-size: 1.1rem !important;
         border-radius: 10px !important;
     }
-    /* 數值卡片視覺增強 */
     div[data-testid="stMetric"] {
         background-color: rgba(128, 128, 128, 0.08);
         border: 1px solid rgba(128, 128, 128, 0.2);
@@ -55,8 +52,8 @@ if "authenticated" not in st.session_state:
 if not st.session_state.authenticated:
     st.title("🔐 內部量化決策系統")
     st.caption("請輸入通行碼以開始使用")
-    pwd = st.text_input("訪問密碼", type="password")
-    if st.button("🔓 登入系統", type="primary", use_container_width=True):
+    pwd = st.text_input("訪問密碼", type="password", key="login_pwd")
+    if st.button("🔓 登入系統", type="primary", use_container_width=True, key="login_btn"):
         if pwd == ACCESS_PASSWORD:
             st.session_state.authenticated = True
             st.rerun()
@@ -149,7 +146,6 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
 
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
 
-        # 智能整合 TWSE 盤中即時資料
         if ".TW" in ticker.upper():
             twse_live = fetch_twse_realtime(ticker)
             if twse_live and twse_live["match_price"] > 0:
@@ -555,12 +551,12 @@ MARKET_QUALITY_UNIVERSE = [
     ("元大台灣50", "0050.TW", "台股核心藍籌組合")
 ]
 
-# ----------------- 狀態初始化 (模式與導覽記憶) -----------------
+# ----------------- 狀態初始化 -----------------
 if "main_mode" not in st.session_state:
-    st.session_state.main_mode = "single"  # single, market, forex
+    st.session_state.main_mode = "single"
 
 if "sub_tab" not in st.session_state:
-    st.session_state.sub_tab = "dec"       # 預設直接開結論
+    st.session_state.sub_tab = "dec"
 
 if "selected_ticker" not in st.session_state:
     st.session_state.selected_ticker = "2330.TW"
@@ -568,22 +564,22 @@ if "selected_ticker" not in st.session_state:
 if "analysis_cache" not in st.session_state:
     st.session_state.analysis_cache = None
 
-# ----------------- 頂部三大主功能切換區 (全大按鈕化) -----------------
+# ----------------- 頂部三大主功能切換區 (配置獨立 key) -----------------
 st.title("📱 股期決策旗艦站")
 
 btn_col1, btn_col2, btn_col3 = st.columns(3)
 with btn_col1:
-    if st.button("🔍 個股診斷", type="primary" if st.session_state.main_mode == "single" else "secondary", use_container_width=True):
+    if st.button("🔍 個股診斷", type="primary" if st.session_state.main_mode == "single" else "secondary", use_container_width=True, key="main_nav_single"):
         st.session_state.main_mode = "single"
         st.rerun()
 
 with btn_col2:
-    if st.button("💎 優質雷達", type="primary" if st.session_state.main_mode == "market" else "secondary", use_container_width=True):
+    if st.button("💎 優質雷達", type="primary" if st.session_state.main_mode == "market" else "secondary", use_container_width=True, key="main_nav_market"):
         st.session_state.main_mode = "market"
         st.rerun()
 
 with btn_col3:
-    if st.button("💱 外匯熱錢", type="primary" if st.session_state.main_mode == "forex" else "secondary", use_container_width=True):
+    if st.button("💱 外匯大盤", type="primary" if st.session_state.main_mode == "forex" else "secondary", use_container_width=True, key="main_nav_forex"):
         st.session_state.main_mode = "forex"
         st.rerun()
 
@@ -600,34 +596,32 @@ global_forex = analyze_forex_data()
 
 # ================= 模式 1：個股全維度深度體檢 =================
 if st.session_state.main_mode == "single":
-    st.caption("⚡ 常用熱門股（點擊立即切換診斷）：")
+    st.caption("⚡ 常用熱門股（點擊切換）：")
 
-    # 快捷股票切換（2x2 大按鈕矩陣，告別手指擠壓）
     q1, q2 = st.columns(2)
     with q1:
-        if st.button("台積電 (2330)", use_container_width=True):
+        if st.button("台積電 (2330)", use_container_width=True, key="qp_2330"):
             st.session_state.selected_ticker = "2330.TW"
             st.session_state.analysis_cache = None
             st.rerun()
-        if st.button("鴻海 (2317)", use_container_width=True):
+        if st.button("鴻海 (2317)", use_container_width=True, key="qp_2317"):
             st.session_state.selected_ticker = "2317.TW"
             st.session_state.analysis_cache = None
             st.rerun()
 
     with q2:
-        if st.button("聯發科 (2454)", use_container_width=True):
+        if st.button("聯發科 (2454)", use_container_width=True, key="qp_2454"):
             st.session_state.selected_ticker = "2454.TW"
             st.session_state.analysis_cache = None
             st.rerun()
-        if st.button("富邦金 (2881)", use_container_width=True):
+        if st.button("富邦金 (2881)", use_container_width=True, key="qp_2881"):
             st.session_state.selected_ticker = "2881.TW"
             st.session_state.analysis_cache = None
             st.rerun()
 
-    ticker_input = st.text_input("輸入查詢代碼 (上市 .TW / 上櫃 .TWO)", value=st.session_state.selected_ticker)
+    ticker_input = st.text_input("輸入查詢代碼 (上市 .TW / 上櫃 .TWO)", value=st.session_state.selected_ticker, key="ticker_input_field")
 
-    # 巨大直覺執行按鈕
-    if st.button("🚀 執行全維度深度診斷", type="primary", use_container_width=True):
+    if st.button("🚀 執行全維度深度診斷", type="primary", use_container_width=True, key="run_single_analysis_btn"):
         with st.spinner("連線 TWSE 撮合與官方主機計算中..."):
             df_stock = fetch_and_calc(ticker_input.strip())
             if df_stock is not None:
@@ -637,7 +631,6 @@ if st.session_state.main_mode == "single":
                 st.session_state.analysis_cache = None
                 st.error("無法取得該標的行情數據，請確認代碼是否正確。")
 
-    # 渲染診斷結果
     if st.session_state.analysis_cache is not None:
         res, df_stock = st.session_state.analysis_cache
         is_below_stop = res['close'] <= res['stop_loss']
@@ -646,7 +639,6 @@ if st.session_state.main_mode == "single":
 
         st.divider()
 
-        # 頂部即時成交卡片
         if res.get("live_info"):
             st.caption(f"⚡ **已直連臺灣證券交易所 (TWSE) 官方即時撮合** ｜ 時間：{res['live_info']['time']}")
 
@@ -660,46 +652,45 @@ if st.session_state.main_mode == "single":
         c4.metric("最大預期風險", f"{risk_pct:.2f}%" if not is_below_stop else "已在防守線下")
 
         st.write("---")
-        st.markdown("### 🧭 功能模組切換（點選直接展開，免滑動）")
+        st.markdown("### 🧭 功能模組切換（點選直接展開）")
 
-        # 3×3 九宮格直覺大按鈕矩陣
+        # 3×3 九宮格按鈕 (配置完全獨立 key)
         nav1, nav2, nav3 = st.columns(3)
         with nav1:
-            if st.button("🎯 決策結論", type="primary" if st.session_state.sub_tab == "dec" else "secondary", use_container_width=True):
+            if st.button("🎯 決策結論", type="primary" if st.session_state.sub_tab == "dec" else "secondary", use_container_width=True, key="grid_btn_dec"):
                 st.session_state.sub_tab = "dec"
                 st.rerun()
-            if nav1.button("💎 企業體質", type="primary" if st.session_state.sub_tab == "fund" else "secondary", use_container_width=True):
+            if st.button("💎 企業體質", type="primary" if st.session_state.sub_tab == "fund" else "secondary", use_container_width=True, key="grid_btn_fund"):
                 st.session_state.sub_tab = "fund"
                 st.rerun()
-            if nav1.button("📊 歷史勝率", type="primary" if st.session_state.sub_tab == "bt" else "secondary", use_container_width=True):
+            if st.button("📊 歷史勝率", type="primary" if st.session_state.sub_tab == "bt" else "secondary", use_container_width=True, key="grid_btn_bt"):
                 st.session_state.sub_tab = "bt"
                 st.rerun()
 
         with nav2:
-            if st.button("⚡ 開盤即時", type="primary" if st.session_state.sub_tab == "rt" else "secondary", use_container_width=True):
+            if st.button("⚡ 開盤即時", type="primary" if st.session_state.sub_tab == "rt" else "secondary", use_container_width=True, key="grid_btn_rt"):
                 st.session_state.sub_tab = "rt"
                 st.rerun()
-            if nav2.button("🚪 階梯停利", type="primary" if st.session_state.sub_tab == "exit" else "secondary", use_container_width=True):
+            if st.button("🚪 階梯停利", type="primary" if st.session_state.sub_tab == "exit" else "secondary", use_container_width=True, key="grid_btn_exit"):
                 st.session_state.sub_tab = "exit"
                 st.rerun()
-            if nav2.button("💱 外匯熱錢", type="primary" if st.session_state.sub_tab == "forex" else "secondary", use_container_width=True):
+            if st.button("💱 匯率連動", type="primary" if st.session_state.sub_tab == "forex" else "secondary", use_container_width=True, key="grid_btn_forex"):
                 st.session_state.sub_tab = "forex"
                 st.rerun()
 
         with nav3:
-            if st.button("📏 均線矩陣", type="primary" if st.session_state.sub_tab == "ma" else "secondary", use_container_width=True):
+            if st.button("📏 均線矩陣", type="primary" if st.session_state.sub_tab == "ma" else "secondary", use_container_width=True, key="grid_btn_ma"):
                 st.session_state.sub_tab = "ma"
                 st.rerun()
-            if nav3.button("💰 風控試算", type="primary" if st.session_state.sub_tab == "calc" else "secondary", use_container_width=True):
+            if st.button("💰 風控試算", type="primary" if st.session_state.sub_tab == "calc" else "secondary", use_container_width=True, key="grid_btn_calc"):
                 st.session_state.sub_tab = "calc"
                 st.rerun()
-            if nav3.button("📈 走勢圖表", type="primary" if st.session_state.sub_tab == "chart" else "secondary", use_container_width=True):
+            if st.button("📈 走勢圖表", type="primary" if st.session_state.sub_tab == "chart" else "secondary", use_container_width=True, key="grid_btn_chart"):
                 st.session_state.sub_tab = "chart"
                 st.rerun()
 
         st.write("---")
 
-        # ----------------- 模組 1：決策結論 -----------------
         if st.session_state.sub_tab == "dec":
             st.subheader("🎯 綜合決策結論")
             if is_below_stop:
@@ -713,7 +704,6 @@ if st.session_state.main_mode == "single":
             else:
                 st.error("### 🔴 暫緩進場：評價過高或短期均線下壓，現金為王")
 
-        # ----------------- 模組 2：開盤即時 -----------------
         elif st.session_state.sub_tab == "rt":
             st.subheader("⚡ 開盤即時狀態診斷 (TWSE 官方撮合)")
             st.markdown(f"**當前 K 棒型態：** `{res['k_type']}`")
@@ -729,7 +719,6 @@ if st.session_state.main_mode == "single":
             elif res['gap_pct'] > 0 and res['intraday_pct'] > 0:
                 st.success("🟢 **多方強推格局：跳空開高且紅 K 續攻！** 買盤扎實，可依計畫分批布局。")
 
-        # ----------------- 模組 3：均線矩陣 -----------------
         elif st.session_state.sub_tab == "ma":
             st.subheader("📏 日線・月線・季線 位階矩陣")
             st.markdown(f"**均線排列結構：** `{res['ma_alignment']}`")
@@ -739,7 +728,6 @@ if st.session_state.main_mode == "single":
             m3.metric("季線 (60MA)", f"{res['ma_status']['ma60_val']:.2f}", f"{res['ma_status']['ma60_diff']:+.1f}%")
             st.caption("※ 正負百分比代表當前股價高於（+）或低於（-）該均線之乖離幅度。")
 
-        # ----------------- 模組 4：企業體質 -----------------
         elif st.session_state.sub_tab == "fund":
             st.subheader("💎 企業基本面體質護城河")
             f_data = res['fund_data']
@@ -753,7 +741,6 @@ if st.session_state.main_mode == "single":
             for r in f_data['reasons']:
                 st.write(f"• {r}")
 
-        # ----------------- 模組 5：階梯停利 -----------------
         elif st.session_state.sub_tab == "exit":
             st.subheader("🚪 機械化分階出場規劃")
             st.markdown(f"""
@@ -763,14 +750,13 @@ if st.session_state.main_mode == "single":
             - **移動停利（Trailing Stop）**：其餘部位收盤跌破 5 日線全數獲利了結。
             """)
 
-        # ----------------- 模組 6：風控試算 -----------------
         elif st.session_state.sub_tab == "calc":
             st.subheader("🧮 部位規模與盈虧比試算 (雙重風控防護)")
             col_cap, col_risk = st.columns(2)
             with col_cap:
-                total_capital = st.number_input("總操作資金 (NTD)", value=1000000, step=100000)
+                total_capital = st.number_input("總操作資金 (NTD)", value=1000000, step=100000, key="calc_cap_input")
             with col_risk:
-                risk_tolerance = st.slider("單筆最大承受損失比率", min_value=0.5, max_value=3.0, value=1.0, step=0.1)
+                risk_tolerance = st.slider("單筆最大承受損失比率", min_value=0.5, max_value=3.0, value=1.0, step=0.1, key="calc_risk_slider")
 
             max_risk_dollar = total_capital * (risk_tolerance / 100.0)
 
@@ -795,7 +781,6 @@ if st.session_state.main_mode == "single":
             b3.metric("目標獲利區 (近60日高)", f"{res['target_60d']:.2f} 元")
             b4.metric("預期盈虧比 (R/R)", f"{rr_ratio:.2f} : 1")
 
-        # ----------------- 模組 7：歷史勝率 -----------------
         elif st.session_state.sub_tab == "bt":
             st.subheader("📊 過去 1 年策略回測數據")
             bt = backtest_strategy(df_stock)
@@ -809,7 +794,6 @@ if st.session_state.main_mode == "single":
             else:
                 st.write("該標的歷史數據樣本不足以計算回測。")
 
-        # ----------------- 模組 8：外匯熱錢 -----------------
         elif st.session_state.sub_tab == "forex":
             st.subheader("💱 外匯走勢與台股熱錢連動 (臺灣銀行官方連線)")
             fx = res['forex_info']
@@ -824,7 +808,6 @@ if st.session_state.main_mode == "single":
             st.markdown(f"**美元指數結構：** {fx['dxy_trend']}")
             st.markdown(f"**日圓套利平倉風險：** {fx['jpy_risk']}")
 
-        # ----------------- 模組 9：走勢圖表 -----------------
         elif st.session_state.sub_tab == "chart":
             st.subheader("📈 均線價格走勢圖")
             valid_cols = ['Close']
@@ -839,7 +822,7 @@ elif st.session_state.main_mode == "market":
     st.subheader("💎 市場穩健優質標的・即時連線掃描")
     st.caption("結合【基本面護城河】×【TWSE 官方即時量價多空動能】，全自動評分排序")
 
-    if st.button("⚡ 開始全市場即時連線篩選", type="primary", use_container_width=True):
+    if st.button("⚡ 開始全市場即時連線篩選", type="primary", use_container_width=True, key="market_scan_exec_btn"):
         progress_bar = st.progress(0)
         status_text = st.empty()
         scan_results = []
