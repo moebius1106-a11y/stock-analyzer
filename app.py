@@ -3,12 +3,12 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import requests
-import json
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 # 頁面配置
 st.set_page_config(
-    page_title="次日開市與即時量化決策站 (權威連線旗艦版)",
+    page_title="次日開市與即時量化決策站 (權威連線加固版)",
     page_icon="📈",
     layout="centered",
     initial_sidebar_state="collapsed"
@@ -45,8 +45,8 @@ def safe_float(val, default=0.0):
 # ----------------- 權威 API 1：臺灣證券交易所官方即時行情 (TWSE MIS) -----------------
 def fetch_twse_realtime(ticker: str):
     """
-    直連臺灣證券交易所 (TWSE) 與櫃買中心 (TPEx) 官方撮合即時行情主機
-    取得 0 延遲之撮合現價 (z)、開盤價 (o)、最高 (h)、最低 (l)、總量 (v)、昨收 (y)
+    直連臺灣證券交易所 (TWSE) 與櫃買中心 (TPEx) 官方撮合主機
+    取得 0 延遲撮合價、開盤價、高低價與累積量
     """
     clean_code = ticker.replace(".TW", "").replace(".TWO", "").strip()
     market = "otc" if ".TWO" in ticker.upper() else "tse"
@@ -62,7 +62,8 @@ def fetch_twse_realtime(ticker: str):
             if msg_arr:
                 item = msg_arr[0]
                 y_close = safe_float(item.get("y"))
-                z_price = safe_float(item.get("z"), default=y_close)
+                z_price = safe_float(item.get("z"))
+                # 盤前或暫停撮合時退回買價或昨收
                 if z_price <= 0:
                     b_list = item.get("b", "_").split("_")
                     z_price = safe_float(b_list[0], default=y_close)
@@ -83,30 +84,32 @@ def fetch_twse_realtime(ticker: str):
         pass
     return None
 
-# ----------------- 權威 API 2：臺灣銀行 (Bank of Taiwan) 官方牌告匯率 -----------------
+# ----------------- 權威 API 2：臺灣銀行官方牌告匯率 -----------------
 @st.cache_data(ttl=300)
 def fetch_bot_forex():
-    """直連臺灣銀行官方 CSV 牌告匯率系統取得最權威新台幣即期匯率"""
+    """直連臺灣銀行官方 CSV 取得新台幣最精確即期匯率"""
     url = "https://rate.bot.com.tw/xrt/flcsv/0/day"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         r = requests.get(url, headers=headers, timeout=4)
         if r.status_code == 200:
             lines = r.text.splitlines()
-            usd_rate = None
             for line in lines:
                 parts = line.split(",")
-                if len(parts) >= 13:
-                    currency = parts[0].strip()
-                    if currency == "USD":
-                        usd_rate = safe_float(parts[12], default=safe_float(parts[2]))
-            if usd_rate and usd_rate > 0:
-                return {"usd_twd": usd_rate, "source": "臺灣銀行官方牌告"}
+                if len(parts) >= 5 and parts[0].strip() == "USD":
+                    # 依序尋找即期賣出價、即期買入價、現金賣出價
+                    val = safe_float(parts[12]) if len(parts) >= 13 else 0.0
+                    if val <= 0 and len(parts) >= 5:
+                        val = safe_float(parts[4])
+                    if val <= 0 and len(parts) >= 4:
+                        val = safe_float(parts[3])
+                    if val > 0:
+                        return {"usd_twd": val, "source": "臺灣銀行官方牌告"}
     except Exception:
         pass
     return None
 
-# ----------------- 歷史技術數據與指標計算 -----------------
+# ----------------- 歷史技術數據與指標計算 (時序對齊修正) -----------------
 @st.cache_data(ttl=60)
 def fetch_and_calc(ticker: str, period: str = "1y"):
     try:
@@ -116,15 +119,29 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
             return None
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
 
-        # 整合 TWSE 即時盤中數據
+        # 智能對齊 TWSE 即時價格：若最後一筆不是今天，則追加新列，避免覆蓋昨日收盤
         if ".TW" in ticker.upper():
             twse_live = fetch_twse_realtime(ticker)
             if twse_live and twse_live["match_price"] > 0:
-                df.iloc[-1, df.columns.get_loc('Close')] = twse_live["match_price"]
-                df.iloc[-1, df.columns.get_loc('High')] = max(df.iloc[-1]['High'], twse_live["high"])
-                df.iloc[-1, df.columns.get_loc('Low')] = min(df.iloc[-1]['Low'], twse_live["low"]) if twse_live["low"] > 0 else df.iloc[-1]['Low']
-                if twse_live["volume"] > 0:
-                    df.iloc[-1, df.columns.get_loc('Volume')] = twse_live["volume"]
+                last_date = df.index[-1].date()
+                today_date = datetime.now().date()
+                if last_date < today_date:
+                    # 追加今天盤中最新列
+                    new_row = pd.DataFrame([{
+                        'Open': twse_live['open'],
+                        'High': twse_live['high'],
+                        'Low': twse_live['low'],
+                        'Close': twse_live['match_price'],
+                        'Volume': twse_live['volume']
+                    }], index=[pd.Timestamp.now()])
+                    df = pd.concat([df, new_row])
+                else:
+                    # 覆蓋今日已有之動態盤中列
+                    df.iloc[-1, df.columns.get_loc('Close')] = twse_live["match_price"]
+                    df.iloc[-1, df.columns.get_loc('High')] = max(df.iloc[-1]['High'], twse_live["high"])
+                    df.iloc[-1, df.columns.get_loc('Low')] = min(df.iloc[-1]['Low'], twse_live["low"]) if twse_live["low"] > 0 else df.iloc[-1]['Low']
+                    if twse_live["volume"] > 0:
+                        df.iloc[-1, df.columns.get_loc('Volume')] = twse_live["volume"]
 
         # 均線
         df['MA5'] = df['Close'].rolling(5).mean()
@@ -323,8 +340,9 @@ def backtest_strategy(df_stock):
         "max_drawdown": max_drawdown
     }
 
-# ----------------- 外匯與資金流向 -----------------
-def analyze_forex_data(df_usdtwd, df_dxy, df_jpy):
+# ----------------- 外匯數據快取分析 -----------------
+@st.cache_data(ttl=300)
+def analyze_forex_data():
     res = {
         "twd_rate": 32.2,
         "twd_change": 0.0,
@@ -337,10 +355,17 @@ def analyze_forex_data(df_usdtwd, df_dxy, df_jpy):
         "source": "Yahoo 即時外匯"
     }
 
+    # 臺灣銀行官方匯率
     bot_data = fetch_bot_forex()
     if bot_data:
         res["twd_rate"] = bot_data["usd_twd"]
         res["source"] = bot_data["source"]
+
+    df_usdtwd = fetch_and_calc("USDTWD=X")
+    if df_usdtwd is None:
+        df_usdtwd = fetch_and_calc("TWD=X")
+    df_dxy = fetch_and_calc("DX-Y.NYB")
+    df_jpy = fetch_and_calc("JPY=X")
 
     try:
         if df_usdtwd is not None and len(df_usdtwd) >= 2:
@@ -386,11 +411,10 @@ def analyze_forex_data(df_usdtwd, df_dxy, df_jpy):
     return res
 
 # ----------------- 全維度綜合評估 -----------------
-def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, df_usdtwd, df_dxy, df_jpy):
+def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, forex_info):
     fund_data = fetch_fundamentals(ticker)
     live_twse = fetch_twse_realtime(ticker)
     ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag = analyze_opening_and_ma(df_stock, live_twse)
-    forex_info = analyze_forex_data(df_usdtwd, df_dxy, df_jpy)
 
     last_stk = df_stock.iloc[-1]
     prev_stk = df_stock.iloc[-2]
@@ -458,7 +482,6 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
         tech_score += 7
         tech_reasons.append(f"RSI 處健康攻擊區 ({last_stk['RSI14']:.1f})")
 
-    # 總分整合
     total_score = int((global_score + mkt_score + ma_score + tech_score) * 0.6 + fund_data['score'] * 0.8)
     total_score = min(max(total_score, 0), 100)
 
@@ -514,22 +537,14 @@ mode = st.radio("功能模式選擇：", [
     "💱 全球外匯與熱錢資金儀表板"
 ], horizontal=True)
 
-# ----------------- 數據安全載入（已修正 or 報錯） -----------------
+# 全域預載資料
 df_market = fetch_and_calc("^TWII")
-
 df_futures = fetch_and_calc("WTX=F")
 if df_futures is None:
     df_futures = df_market
-
 df_tsm = fetch_and_calc("TSM")
 df_sox = fetch_and_calc("^SOX")
-
-df_usdtwd = fetch_and_calc("USDTWD=X")
-if df_usdtwd is None:
-    df_usdtwd = fetch_and_calc("TWD=X")
-
-df_dxy = fetch_and_calc("DX-Y.NYB")
-df_jpy = fetch_and_calc("JPY=X")
+global_forex = analyze_forex_data()
 
 # ================= 模式 1：單股深度體檢 (包含全部 9 大分頁) =================
 if mode == "🔍 單股全維度深度體檢 (完整功能)":
@@ -539,23 +554,32 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
 
     if "selected_ticker" not in st.session_state:
         st.session_state.selected_ticker = "2330.TW"
+    if "auto_run" not in st.session_state:
+        st.session_state.auto_run = False
 
     for i, (name, code) in enumerate(quick_list):
         if q_cols[i].button(name, use_container_width=True):
             st.session_state.selected_ticker = code
+            st.session_state.auto_run = True
+            st.rerun()
 
     ticker_input = st.text_input("輸入查詢代碼 (上市 .TW / 上櫃 .TWO)", value=st.session_state.selected_ticker)
+    run_btn = st.button("🔍 執行全維度診斷", type="primary", use_container_width=True)
 
-    if st.button("🔍 執行全維度診斷", type="primary", use_container_width=True):
+    if run_btn or st.session_state.auto_run:
+        st.session_state.auto_run = False  # 消耗單次自動執行
         with st.spinner("連線 臺灣證券交易所(TWSE) 與 臺灣銀行(BOT) 權威主機計算中..."):
             df_stock = fetch_and_calc(ticker_input.strip())
 
         if df_stock is None:
             st.error("無法取得該標的行情數據，請確認代碼是否正確。")
         else:
-            res = analyze_full_stock(ticker_input.strip(), df_stock, df_market, df_futures, df_tsm, df_sox, df_usdtwd, df_dxy, df_jpy)
-            risk_unit = max(res['close'] - res['stop_loss'], 0.1)
-            target_1 = res['close'] + (1.5 * risk_unit)
+            res = analyze_full_stock(ticker_input.strip(), df_stock, df_market, df_futures, df_tsm, df_sox, global_forex)
+            
+            # 安全風控單元：若已跌破防守價，強制判定無進場條件
+            is_below_stop = res['close'] <= res['stop_loss']
+            risk_unit = max(res['close'] - res['stop_loss'], 0.0)
+            target_1 = res['close'] + (1.5 * max(risk_unit, res['close'] * 0.03))
 
             if res.get("live_info"):
                 st.caption(f"⚡ **已直連臺灣證券交易所 (TWSE) 官方即時撮合** ｜ 最新時間：{res['live_info']['time']}")
@@ -566,8 +590,8 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
 
             c3, c4 = st.columns(2)
             c3.metric("建議防守價 (停損)", f"{res['stop_loss']:.2f} 元")
-            risk_pct = (risk_unit / res['close']) * 100
-            c4.metric("最大預期風險", f"{risk_pct:.2f}%")
+            risk_pct = (risk_unit / res['close']) * 100 if not is_below_stop else 0.0
+            c4.metric("最大預期風險", f"{risk_pct:.2f}%" if not is_below_stop else "已在防守線下")
 
             st.divider()
 
@@ -576,6 +600,7 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 "🚪 階梯停利", "💰 風控計算機", "📊 歷史勝率", "💱 外匯與熱錢", "📈 均線走勢"
             ])
 
+            # Tab 1: 開盤即時
             with t_rt:
                 st.subheader("⚡ 開盤即時狀態診斷 (TWSE 官方連線)")
                 st.markdown(f"**當前 K 棒型態：** `{res['k_type']}`")
@@ -591,8 +616,12 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 elif res['gap_pct'] > 0 and res['intraday_pct'] > 0:
                     st.success("🟢 **多方強推格局：跳空開高且紅 K 續攻！** 買盤扎實，可依計畫分批布局。")
 
+            # Tab 2: 決策結論
             with t_dec:
-                if res['total_score'] >= 75:
+                if is_below_stop:
+                    st.error("### 🔴 現價已跌破建議防守線：嚴禁進場！")
+                    st.write(f"- 當前價位（{res['close']:.2f} 元）低於防守點（{res['stop_loss']:.2f} 元），技術面處於弱勢，切勿逆勢接刀。")
+                elif res['total_score'] >= 75:
                     st.success("### 🟢 積極偏多：體質與量價動能同步翻多，適合進場")
                     st.write(f"- 建議防守價位：**{res['stop_loss']:.2f} 元**。")
                 elif 60 <= res['total_score'] < 75:
@@ -600,6 +629,7 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 else:
                     st.error("### 🔴 暫緩進場：評價過高或短期均線下壓，現金為王")
 
+            # Tab 3: 均線矩陣
             with t_ma:
                 st.subheader("📏 日線・月線・季線 位階矩陣")
                 st.markdown(f"**均線排列結構：** `{res['ma_alignment']}`")
@@ -607,8 +637,9 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 m1.metric("日線 (5MA)", f"{res['ma_status']['ma5_val']:.2f}", f"{res['ma_status']['ma5_diff']:+.1f}%")
                 m2.metric("月線 (20MA)", f"{res['ma_status']['ma20_val']:.2f}", f"{res['ma_status']['ma20_diff']:+.1f}%")
                 m3.metric("季線 (60MA)", f"{res['ma_status']['ma60_val']:.2f}", f"{res['ma_status']['ma60_diff']:+.1f}%")
-                st.caption("※ 正負百分比標籤代表當前股價高於（+）或低於（-）該均線之乖離幅度。")
+                st.caption("※ 正負百分比代表當前股價高於（+）或低於（-）該均線之乖離幅度。")
 
+            # Tab 4: 基本面
             with t_fund:
                 st.subheader("💎 企業基本面體質護城河")
                 f_data = res['fund_data']
@@ -622,6 +653,7 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 for r in f_data['reasons']:
                     st.write(f"• {r}")
 
+            # Tab 5: 階梯停利
             with t_exit:
                 st.subheader("🚪 機械化分階出場規劃")
                 st.markdown(f"""
@@ -631,6 +663,7 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 - **移動停利（Trailing Stop）**：其餘部位收盤跌破 5 日線全數獲利了結。
                 """)
 
+            # Tab 6: 風控計算機 (修復負風險數值漏洞)
             with t_calc:
                 st.subheader("🧮 部位規模與盈虧比試算")
                 col_cap, col_risk = st.columns(2)
@@ -640,10 +673,16 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                     risk_tolerance = st.slider("單筆最大承受損失比率", min_value=0.5, max_value=3.0, value=1.0, step=0.1)
 
                 max_risk_dollar = total_capital * (risk_tolerance / 100.0)
-                loss_per_lot = risk_unit * 1000
-                suggested_lots = int(max_risk_dollar // loss_per_lot) if loss_per_lot > 0 else 0
-                potential_reward = max(res['target_60d'] - res['close'], 0)
-                rr_ratio = potential_reward / risk_unit if risk_unit > 0 else 0
+
+                if is_below_stop:
+                    st.error("⚠️ 警告：當前股價已在停損價位之下，無安全進場區間，建議買進張數：0 張！")
+                    suggested_lots = 0
+                    rr_ratio = 0.0
+                else:
+                    loss_per_lot = risk_unit * 1000
+                    suggested_lots = int(max_risk_dollar // loss_per_lot) if loss_per_lot > 0 else 0
+                    potential_reward = max(res['target_60d'] - res['close'], 0)
+                    rr_ratio = potential_reward / risk_unit if risk_unit > 0 else 0
 
                 b1, b2 = st.columns(2)
                 b1.metric("單筆最大容許虧損", f"{int(max_risk_dollar):,} 元")
@@ -653,6 +692,7 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 b3.metric("目標獲利區 (近60日高)", f"{res['target_60d']:.2f} 元")
                 b4.metric("預期盈虧比 (R/R)", f"{rr_ratio:.2f} : 1")
 
+            # Tab 7: 歷史回測
             with t_bt:
                 st.subheader("📊 過去 1 年策略回測數據")
                 bt = backtest_strategy(df_stock)
@@ -666,10 +706,10 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 else:
                     st.write("該標的歷史數據樣本不足以計算回測。")
 
+            # Tab 8: 外匯熱錢
             with t_forex:
                 st.subheader("💱 外匯走勢與台股熱錢連動 (臺灣銀行官方連線)")
                 fx = res['forex_info']
-
                 fx1, fx2 = st.columns(2)
                 fx1.metric("美元兌新台幣 (USD/TWD)", f"{fx['twd_rate']:.2f}", f"{fx['twd_change']:+.2f}")
                 fx2.metric("美元指數 (DXY)", f"{fx['dxy_rate']:.2f}")
@@ -681,11 +721,12 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 st.markdown(f"**美元指數結構：** {fx['dxy_trend']}")
                 st.markdown(f"**日圓套利平倉風險：** {fx['jpy_risk']}")
 
+            # Tab 9: 均線走勢圖
             with t_chart:
                 st.subheader("📈 收盤價與 5MA / 20MA / 60MA 走勢")
                 st.line_chart(df_stock[['Close', 'MA5', 'MA20', 'MA60']].dropna().tail(50))
 
-# ================= 模式 2：全市場優質體質雷達 =================
+# ================= 模式 2：全市場優質體質雷達 (效能最佳化) =================
 elif mode == "💎 全市場優質體質股即時量化雷達":
     st.subheader("💎 市場穩健優質標的・即時連線掃描")
     st.caption("結合【基本面護城河】×【TWSE 官方即時量價多空動能】，全自動評分排序")
@@ -699,7 +740,7 @@ elif mode == "💎 全市場優質體質股即時量化雷達":
             name, code, desc = item
             df_stk = fetch_and_calc(code)
             if df_stk is not None:
-                r = analyze_full_stock(code, df_stk, df_market, df_futures, df_tsm, df_sox, df_usdtwd, df_dxy, df_jpy)
+                r = analyze_full_stock(code, df_stk, df_market, df_futures, df_tsm, df_sox, global_forex)
                 return {
                     "名稱": name,
                     "代碼": code,
@@ -749,7 +790,7 @@ else:
     st.subheader("💱 全球外匯與熱錢資金即時儀表板")
     st.caption("直連臺灣銀行官方牌告與全球匯率主機，精準掌握外資熱錢方向")
 
-    fx_info = analyze_forex_data(df_usdtwd, df_dxy, df_jpy)
+    fx_info = global_forex
 
     col_f1, col_f2, col_f3 = st.columns(3)
     col_f1.metric("美元兌新台幣 (USD/TWD)", f"{fx_info['twd_rate']:.2f}", f"{fx_info['twd_change']:+.2f}")
@@ -765,6 +806,10 @@ else:
 
     st.write("---")
     st.markdown("### 📈 美元兌新台幣 (USD/TWD) 近期走勢與月線 (20MA)")
+    df_usdtwd = fetch_and_calc("USDTWD=X")
+    if df_usdtwd is None:
+        df_usdtwd = fetch_and_calc("TWD=X")
+
     if df_usdtwd is not None:
         st.line_chart(df_usdtwd[['Close', 'MA20']].dropna().tail(60))
         st.caption("※ 匯率跌破月線代表台幣升值格局（熱錢湧入），站上月線代表貶值格局（資金趨向保守）。")
