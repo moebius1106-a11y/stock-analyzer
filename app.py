@@ -63,7 +63,6 @@ def fetch_twse_realtime(ticker: str):
                 item = msg_arr[0]
                 y_close = safe_float(item.get("y"))
                 z_price = safe_float(item.get("z"), default=y_close)
-                # 若盤前或撮合暫停，z 可能為 0，改用買進最佳價或昨收
                 if z_price <= 0:
                     b_list = item.get("b", "_").split("_")
                     z_price = safe_float(b_list[0], default=y_close)
@@ -95,23 +94,19 @@ def fetch_bot_forex():
         if r.status_code == 200:
             lines = r.text.splitlines()
             usd_rate = None
-            jpy_rate = None
             for line in lines:
                 parts = line.split(",")
                 if len(parts) >= 13:
                     currency = parts[0].strip()
                     if currency == "USD":
-                        # 即期賣出匯率 (最客觀市場交易價)
                         usd_rate = safe_float(parts[12], default=safe_float(parts[2]))
-                    elif currency == "JPY":
-                        jpy_rate = safe_float(parts[12], default=safe_float(parts[2]))
             if usd_rate and usd_rate > 0:
                 return {"usd_twd": usd_rate, "source": "臺灣銀行官方牌告"}
     except Exception:
         pass
     return None
 
-# ----------------- 歷史技術數據與指標計算 (結合即時 API) -----------------
+# ----------------- 歷史技術數據與指標計算 -----------------
 @st.cache_data(ttl=60)
 def fetch_and_calc(ticker: str, period: str = "1y"):
     try:
@@ -121,11 +116,10 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
             return None
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
 
-        # 嘗試整合 TWSE 官方 0 延遲最新盤中價
+        # 整合 TWSE 即時盤中數據
         if ".TW" in ticker.upper():
             twse_live = fetch_twse_realtime(ticker)
             if twse_live and twse_live["match_price"] > 0:
-                # 若取得官方即時價格，動態更新今日 K 棒
                 df.iloc[-1, df.columns.get_loc('Close')] = twse_live["match_price"]
                 df.iloc[-1, df.columns.get_loc('High')] = max(df.iloc[-1]['High'], twse_live["high"])
                 df.iloc[-1, df.columns.get_loc('Low')] = min(df.iloc[-1]['Low'], twse_live["low"]) if twse_live["low"] > 0 else df.iloc[-1]['Low']
@@ -163,7 +157,7 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
     except Exception:
         return None
 
-# ----------------- 基本面體質數據 (防止 429 限流) -----------------
+# ----------------- 基本面體質數據 -----------------
 @st.cache_data(ttl=7200)
 def fetch_fundamentals(ticker: str):
     try:
@@ -329,7 +323,7 @@ def backtest_strategy(df_stock):
         "max_drawdown": max_drawdown
     }
 
-# ----------------- 外匯與資金流向 (雙引擎備援) -----------------
+# ----------------- 外匯與資金流向 -----------------
 def analyze_forex_data(df_usdtwd, df_dxy, df_jpy):
     res = {
         "twd_rate": 32.2,
@@ -343,7 +337,6 @@ def analyze_forex_data(df_usdtwd, df_dxy, df_jpy):
         "source": "Yahoo 即時外匯"
     }
 
-    # 優先嘗試官方臺灣銀行 API
     bot_data = fetch_bot_forex()
     if bot_data:
         res["twd_rate"] = bot_data["usd_twd"]
@@ -465,7 +458,7 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
         tech_score += 7
         tech_reasons.append(f"RSI 處健康攻擊區 ({last_stk['RSI14']:.1f})")
 
-    # 總分整合 (技術面 60% + 基本面 40%)
+    # 總分整合
     total_score = int((global_score + mkt_score + ma_score + tech_score) * 0.6 + fund_data['score'] * 0.8)
     total_score = min(max(total_score, 0), 100)
 
@@ -521,11 +514,20 @@ mode = st.radio("功能模式選擇：", [
     "💱 全球外匯與熱錢資金儀表板"
 ], horizontal=True)
 
+# ----------------- 數據安全載入（已修正 or 報錯） -----------------
 df_market = fetch_and_calc("^TWII")
-df_futures = fetch_and_calc("WTX=F") or df_market
+
+df_futures = fetch_and_calc("WTX=F")
+if df_futures is None:
+    df_futures = df_market
+
 df_tsm = fetch_and_calc("TSM")
 df_sox = fetch_and_calc("^SOX")
-df_usdtwd = fetch_and_calc("USDTWD=X") or fetch_and_calc("TWD=X")
+
+df_usdtwd = fetch_and_calc("USDTWD=X")
+if df_usdtwd is None:
+    df_usdtwd = fetch_and_calc("TWD=X")
+
 df_dxy = fetch_and_calc("DX-Y.NYB")
 df_jpy = fetch_and_calc("JPY=X")
 
@@ -555,11 +557,9 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
             risk_unit = max(res['close'] - res['stop_loss'], 0.1)
             target_1 = res['close'] + (1.5 * risk_unit)
 
-            # 頂部即時數據連線標籤
             if res.get("live_info"):
                 st.caption(f"⚡ **已直連臺灣證券交易所 (TWSE) 官方即時撮合** ｜ 最新時間：{res['live_info']['time']}")
 
-            # 頂部 2x2 數值卡片
             c1, c2 = st.columns(2)
             c1.metric("綜合決策總分", f"{res['total_score']} / 100")
             c2.metric("最新成交價", f"{res['close']:.2f} 元")
@@ -571,13 +571,11 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
 
             st.divider()
 
-            # 完整的 9 大分頁
             t_rt, t_dec, t_ma, t_fund, t_exit, t_calc, t_bt, t_forex, t_chart = st.tabs([
                 "⚡ 開盤即時", "🎯 決策結論", "📏 日/月/季線矩陣", "💎 基本面體質",
                 "🚪 階梯停利", "💰 風控計算機", "📊 歷史勝率", "💱 外匯與熱錢", "📈 均線走勢"
             ])
 
-            # Tab 1: 開盤即時連動
             with t_rt:
                 st.subheader("⚡ 開盤即時狀態診斷 (TWSE 官方連線)")
                 st.markdown(f"**當前 K 棒型態：** `{res['k_type']}`")
@@ -593,7 +591,6 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 elif res['gap_pct'] > 0 and res['intraday_pct'] > 0:
                     st.success("🟢 **多方強推格局：跳空開高且紅 K 續攻！** 買盤扎實，可依計畫分批布局。")
 
-            # Tab 2: 決策結論
             with t_dec:
                 if res['total_score'] >= 75:
                     st.success("### 🟢 積極偏多：體質與量價動能同步翻多，適合進場")
@@ -603,7 +600,6 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 else:
                     st.error("### 🔴 暫緩進場：評價過高或短期均線下壓，現金為王")
 
-            # Tab 3: 日/月/季線位階矩陣 (完整保留)
             with t_ma:
                 st.subheader("📏 日線・月線・季線 位階矩陣")
                 st.markdown(f"**均線排列結構：** `{res['ma_alignment']}`")
@@ -613,7 +609,6 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 m3.metric("季線 (60MA)", f"{res['ma_status']['ma60_val']:.2f}", f"{res['ma_status']['ma60_diff']:+.1f}%")
                 st.caption("※ 正負百分比標籤代表當前股價高於（+）或低於（-）該均線之乖離幅度。")
 
-            # Tab 4: 基本面體質護城河
             with t_fund:
                 st.subheader("💎 企業基本面體質護城河")
                 f_data = res['fund_data']
@@ -627,7 +622,6 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 for r in f_data['reasons']:
                     st.write(f"• {r}")
 
-            # Tab 5: 階梯停利 SOP
             with t_exit:
                 st.subheader("🚪 機械化分階出場規劃")
                 st.markdown(f"""
@@ -637,7 +631,6 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 - **移動停利（Trailing Stop）**：其餘部位收盤跌破 5 日線全數獲利了結。
                 """)
 
-            # Tab 6: 部位風控計算機
             with t_calc:
                 st.subheader("🧮 部位規模與盈虧比試算")
                 col_cap, col_risk = st.columns(2)
@@ -660,7 +653,6 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 b3.metric("目標獲利區 (近60日高)", f"{res['target_60d']:.2f} 元")
                 b4.metric("預期盈虧比 (R/R)", f"{rr_ratio:.2f} : 1")
 
-            # Tab 7: 客觀歷史勝率回測
             with t_bt:
                 st.subheader("📊 過去 1 年策略回測數據")
                 bt = backtest_strategy(df_stock)
@@ -674,7 +666,6 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 else:
                     st.write("該標的歷史數據樣本不足以計算回測。")
 
-            # Tab 8: 外匯與熱錢流向 (連線台銀官方)
             with t_forex:
                 st.subheader("💱 外匯走勢與台股熱錢連動 (臺灣銀行官方連線)")
                 fx = res['forex_info']
@@ -690,7 +681,6 @@ if mode == "🔍 單股全維度深度體檢 (完整功能)":
                 st.markdown(f"**美元指數結構：** {fx['dxy_trend']}")
                 st.markdown(f"**日圓套利平倉風險：** {fx['jpy_risk']}")
 
-            # Tab 9: 均線走勢圖 (四線合一)
             with t_chart:
                 st.subheader("📈 收盤價與 5MA / 20MA / 60MA 走勢")
                 st.line_chart(df_stock[['Close', 'MA5', 'MA20', 'MA60']].dropna().tail(50))
