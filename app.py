@@ -14,17 +14,15 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 手機端直覺觸控 CSS：縮小不必要留白、緊湊一體化控制
+# 手機端直覺觸控 CSS
 st.markdown("""
 <style>
-    /* 頂部緊湊間距 */
     .block-container {
         padding-top: 1rem !important;
         padding-bottom: 2rem !important;
         padding-left: 0.8rem !important;
         padding-right: 0.8rem !important;
     }
-    /* 按鈕大拇指舒適度、降低高度避免下推 */
     div.stButton > button {
         width: 100%;
         height: 2.8rem !important;
@@ -34,13 +32,11 @@ st.markdown("""
         margin-bottom: 0.2rem;
         padding: 0 0.5rem !important;
     }
-    /* 輸入框高度優化 */
     div.stTextInput > div > div > input {
         height: 2.8rem !important;
         font-size: 1.05rem !important;
         border-radius: 10px !important;
     }
-    /* 指標卡片緊湊化 */
     div[data-testid="stMetric"] {
         background-color: rgba(128, 128, 128, 0.08);
         border: 1px solid rgba(128, 128, 128, 0.18);
@@ -54,7 +50,6 @@ st.markdown("""
     div[data-testid="stMetricValue"] {
         font-size: 1.25rem !important;
     }
-    /* 折疊卡片 (Expander) 質感加強 */
     .streamlit-expanderHeader {
         font-size: 1.02rem !important;
         font-weight: 600 !important;
@@ -154,6 +149,57 @@ def fetch_bot_forex():
     except Exception:
         pass
     return None
+
+# ----------------- 權威 API 3：機構分析師評等與目標價數據庫 -----------------
+@st.cache_data(ttl=3600)
+def fetch_analyst_consensus(ticker: str):
+    """
+    即時擷取內外資機構券商研究報告共識目標價、投資評等與覆蓋家數
+    """
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info or {}
+
+        target_mean = safe_float(info.get('targetMeanPrice'))
+        target_high = safe_float(info.get('targetHighPrice'))
+        target_low = safe_float(info.get('targetLowPrice'))
+        rec_key = str(info.get('recommendationKey', 'none')).lower()
+        rec_mean = safe_float(info.get('recommendationMean'), 3.0)
+        opinions = int(safe_float(info.get('numberOfAnalystOpinions'), 0))
+
+        rec_map = {
+            "strong_buy": ("🔥 強力買進 (Strong Buy)", "機構共識極度偏多，法人密集調升評等"),
+            "buy": ("🟢 買進 (Buy)", "機構共識偏多，預期表現優於大盤"),
+            "hold": ("🟡 中立持有 (Hold)", "機構看法平穩，區間震盪機率高"),
+            "underperform": ("🟠 減碼 (Underperform)", "機構共識偏弱，建議縮減曝險部位"),
+            "sell": ("🔴 賣出 (Sell)", "機構看法保守，建議嚴守紀律離場")
+        }
+
+        rec_label, rec_desc = rec_map.get(rec_key, ("⚪ 暫無機構評等", "該標的暫無多數券商連續追蹤報告"))
+
+        has_target = target_mean > 0
+
+        return {
+            "has_data": has_target or opinions > 0,
+            "target_mean": target_mean,
+            "target_high": target_high,
+            "target_low": target_low,
+            "rec_label": rec_label,
+            "rec_desc": rec_desc,
+            "rec_mean": rec_mean,
+            "opinions": opinions
+        }
+    except Exception:
+        return {
+            "has_data": False,
+            "target_mean": 0.0,
+            "target_high": 0.0,
+            "target_low": 0.0,
+            "rec_label": "⚪ 暫無數據",
+            "rec_desc": "暫無足夠機構報告",
+            "rec_mean": 3.0,
+            "opinions": 0
+        }
 
 # ----------------- 歷史技術數據與指標計算 -----------------
 @st.cache_data(ttl=60)
@@ -486,7 +532,7 @@ def analyze_forex_data():
             if res["twd_rate"] < ma20_twd:
                 res["twd_trend"] = "波段升值格局 (資金面有利台股權值與ETF)"
             else:
-                res["twd_trend"] = "波段貶值格局 (權值股承壓，有利外銷出口)"
+                res["twd_trend"] = "波段貶值格局 (權值股易承壓，有利外銷出口)"
 
         if df_dxy is not None and len(df_dxy) >= 2:
             last_dxy = safe_float(df_dxy.iloc[-1]['Close'], 103.5)
@@ -510,6 +556,7 @@ def analyze_forex_data():
 # ----------------- 全維度綜合評估 -----------------
 def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, forex_info):
     fund_data = fetch_fundamentals(ticker)
+    analyst_data = fetch_analyst_consensus(ticker)
     live_twse = fetch_twse_realtime(ticker)
     ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag = analyze_opening_and_ma(df_stock, live_twse)
 
@@ -576,12 +623,24 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
         tech_score += 7
         tech_reasons.append(f"RSI 處健康攻擊區 ({last_stk['RSI14']:.1f})")
 
-    total_score = int((global_score + mkt_score + ma_score + tech_score) * 0.6 + fund_data['score'] * 0.8)
+    # 分析師加分項 (覆蓋評等偏多給予權重)
+    analyst_bonus = 0
+    if analyst_data["has_data"]:
+        if "強力買進" in analyst_data["rec_label"]:
+            analyst_bonus = 6
+        elif "買進" in analyst_data["rec_label"]:
+            analyst_bonus = 4
+        elif "減碼" in analyst_data["rec_label"] or "賣出" in analyst_data["rec_label"]:
+            analyst_bonus = -6
+
+    total_score = int((global_score + mkt_score + ma_score + tech_score) * 0.55 + fund_data['score'] * 0.75 + analyst_bonus)
     total_score = min(max(total_score, 0), 100)
 
     ma20_val = safe_float(last_stk['MA20'], close * 0.96)
     stop_loss = max(close - 2 * atr_val, ma20_val)
-    target_60d = safe_float(df_stock['High'].tail(60).max(), close * 1.08)
+
+    # 目標價優選：若有券商共識目標價優先採用，否則退回近 60 日波段高點
+    target_60d = analyst_data['target_mean'] if analyst_data['target_mean'] > close else safe_float(df_stock['High'].tail(60).max(), close * 1.08)
 
     return {
         "total_score": total_score,
@@ -599,6 +658,7 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
         "mkt_reasons": mkt_reasons,
         "tech_reasons": tech_reasons,
         "fund_data": fund_data,
+        "analyst_data": analyst_data,
         "forex_info": forex_info,
         "live_info": live_twse
     }
@@ -686,44 +746,37 @@ if "etf_category_filter" not in st.session_state:
     st.session_state.etf_category_filter = "全部"
 
 # ----------------- 頂部導航與功能說明書 -----------------
-st.title("📱 股期決策旗艦站")
+st.title("📱 股期決策旗艦站 (機構版)")
 
-# 📘 功能說明書：點擊即展開，讓使用者隨時查閱現行版本所有功能
 with st.expander("📘 點此查看【系統現行版本完整功能清單與操作說明】", expanded=False):
     st.markdown("""
-    本決策系統專為**機構級盤後開市決策**與**盤中即時應變**設計，目前完整具備以下六大核心模組：
+    本系統專為**機構級精確下單決策**設計，整合券商報告數據，杜絕拖延與話術：
     
-    1. **🔍 個股全維度深度體檢**：
-       - 直連 **臺灣證交所 (TWSE)** 撮合主機，提供 **0 延遲** 即時開盤跳空診斷與紅黑 K 棒判定。
-       - **三均線矩陣**：日線 (5MA)、月線 (20MA)、季線 (60MA) 排列架構與乖離率計算。
-       - **階梯停利 SOP**：初始停損、1.5R 保本減碼點、60 日壓力波段目標與移動停利機制。
-       - **部位風控計算機**：同時考量「單筆最大容許虧損」與「總現金購買力上限」的雙重保護。
-       - **歷史回測驗證**：客觀回溯過去 1 年策略真實勝率、期望報酬率與最大拉回幅度。
+    1. **🎯 權威分析師共識 ＆ 精確下單指引（全新升級）**：
+       - 直連全球與本土主流券商法人研究報告資料庫。
+       - 揭露**機構共識平均目標價**、**潛在報酬空間 (%)**、**覆蓋券商機構家數**與**法人分歧區間**。
+       - **精確下單執行卡**：一鍵明確列出建議進場點、防守停損價、機構目標獲利價與建議下單張數。
     
-    2. **📊 ETF 策略專區**：
-       - 分類涵蓋市值型、高股息、海外科技與長天期美債。
-       - 專屬體質診斷（年化殖利率、Beta 波動係數、一籃子分散風險評級）。
-       - 內建 **定期定額「微笑曲線」加碼計算機**，依季線乖離率提供增減扣款建議。
+    2. **🔍 個股全維度深度體檢**：
+       - 直連 **臺灣證交所 (TWSE)** 撮合主機，提供 **0 延遲** 開盤跳空與盤中 K 棒判定。
+       - 三均線位階矩陣 (5MA / 20MA / 60MA)、階梯停利 SOP、雙重風控購買力計算機與 1 年回測數據。
     
-    3. **⚡ 期貨與美台跨市場連動**：
-       - **台積電 ADR (TSM) 換算**：按 1:5 理論折合台幣價，精算即時溢價率（>10% 預警次日跳空開高）。
-       - **台指期 (WTX) 基差分析**：期現貨正/逆價差診斷，洞悉市場大額資金多空傾向。
-       - 追蹤全球美股微那斯達克 (NQ)、標普 (ES)、黃金 (GC)、輕原油 (CL) 5MA 短線動能。
+    3. **📊 ETF 策略專區**：
+       - 市值型、高股息、海外科技與長天期美債全系列雷達。
+       - 年化殖利率與 Beta 波動風險分析，搭配「定期定額微笑曲線加碼試算」。
     
-    4. **💎 體質績優雷達**：
-       - 雙重量化濾網：基本面護城河（ROE $\ge 15\%$、營業利益率、本益比、負債比）＋ TWSE 即時技術動能。
-       - 採用平行多執行緒技術，秒級掃描全市場核心藍籌排行榜。
+    4. **⚡ 期貨與美台跨市場連動**：
+       - **台積電 ADR (TSM) 1:5 理論換算** 與即時溢價率診斷（溢價 >10% 預警次日跳空開高）。
+       - **台指期貨 (WTX) 基差分析** 與全球小那指 (NQ)、小標普 (ES)、黃金 (GC)、原油 (CL) 動能。
     
-    5. **📢 重要法說會日程 ＆ 即時重大訊息速查**：
-       - 直連權威財經新聞資料庫，一鍵檢索個股最新重大消息。
-       - 整理指標龍頭（台積電、聯發科、鴻海等）季度法說會時程與必看核心看點。
+    5. **💎 體質績優雷達 ＆ 📢 法說會新聞速查**：
+       - 核心藍籌股基本面雙重濾網；一鍵檢索個股最新重大訊息與核心權值法說會時程。
     
     6. **💱 全球外匯與熱錢大盤**：
-       - 直連 **臺灣銀行官方牌告匯率系統**，取得最權威新台幣即期匯價。
-       - 追蹤美元指數 (DXY) 與日圓 (JPY) 套利平倉黑天鵝風險，提供外匯選股對應指引。
+       - 直連臺灣銀行官方牌告匯率系統，即時追蹤 USD/TWD、美元指數 (DXY) 與日圓套利平倉風險。
     """)
 
-# 頂部六大模式切換（2x3 緊湊大拇指按鈕，高度控制在 2.8rem）
+# 頂部六大模式切換（2x3 緊湊大拇指按鈕）
 r1_c1, r1_c2, r1_c3 = st.columns(3)
 with r1_c1:
     if st.button("🔍 個股診斷", type="primary" if st.session_state.main_mode == "single" else "secondary", use_container_width=True, key="m_nav_single"):
@@ -763,9 +816,8 @@ df_tsm = fetch_and_calc("TSM")
 df_sox = fetch_and_calc("^SOX")
 global_forex = analyze_forex_data()
 
-# ================= 模式 1：個股全維度深度體檢 (極致緊湊零滑動優化) =================
+# ================= 模式 1：個股全維度深度體檢 =================
 if st.session_state.main_mode == "single":
-    # 快捷熱門股（單排 4 欄，不佔直向空間）
     h_c1, h_c2, h_c3, h_c4 = st.columns(4)
     if h_c1.button("台積電", use_container_width=True, key="qp_2330"):
         st.session_state.selected_ticker = "2330.TW"
@@ -784,7 +836,6 @@ if st.session_state.main_mode == "single":
         st.session_state.analysis_cache = None
         st.rerun()
 
-    # 一體化搜尋與診斷列（橫向併排，點完視線完全不移動）
     col_input, col_btn = st.columns([2.6, 1.4])
     with col_input:
         ticker_input = st.text_input("輸入查詢代碼", value=st.session_state.selected_ticker, label_visibility="collapsed", key="ticker_input_field")
@@ -792,7 +843,7 @@ if st.session_state.main_mode == "single":
         exec_clicked = st.button("🚀 執行診斷", type="primary", use_container_width=True, key="run_single_analysis_btn")
 
     if exec_clicked:
-        with st.spinner("連線 TWSE 撮合與官方主機計算中..."):
+        with st.spinner("連線 TWSE 撮合與權威機構資料庫中..."):
             df_stock = fetch_and_calc(ticker_input.strip())
             if df_stock is not None:
                 res = analyze_full_stock(ticker_input.strip(), df_stock, df_market, df_futures, df_tsm, df_sox, global_forex)
@@ -801,19 +852,18 @@ if st.session_state.main_mode == "single":
                 st.session_state.analysis_cache = None
                 st.error("無法取得該標的行情數據，請確認代碼是否正確。")
 
-    # 診斷結果直接在當前螢幕就地展示
     if st.session_state.analysis_cache is not None:
         res, df_stock = st.session_state.analysis_cache
         is_below_stop = res['close'] <= res['stop_loss']
         risk_unit = max(res['close'] - res['stop_loss'], 0.0)
         target_1 = res['close'] + (1.5 * max(risk_unit, res['close'] * 0.03))
         is_etf_asset = res['fund_data'].get('is_etf', False)
+        an_data = res['analyst_data']
 
         if res.get("live_info"):
             asset_type_badge = "📊 ETF" if is_etf_asset else "🏢 個股"
             st.caption(f"⚡ **TWSE 撮合** ｜ {asset_type_badge} ｜ {res['live_info']['time']}")
 
-        # 頂部四大核心數值卡片（首屏即視）
         c1, c2 = st.columns(2)
         c1.metric("綜合決策總分", f"{res['total_score']} / 100")
         c2.metric("最新成交價", f"{res['close']:.2f} 元")
@@ -823,8 +873,36 @@ if st.session_state.main_mode == "single":
         risk_pct = (risk_unit / res['close']) * 100 if not is_below_stop else 0.0
         c4.metric("最大預期風險", f"{risk_pct:.2f}%" if not is_below_stop else "已在防守線下")
 
-        # 模組 1：綜合決策結論（首頁直接展開，完全不需滑動）
-        with st.expander("🎯 【決策結論與操作指引】", expanded=True):
+        # 模組 1：權威機構分析師共識 ＆ 精確下單指引（首屏核心）
+        with st.expander("🎯 【權威分析師共識 ＆ 精確下單指引】", expanded=True):
+            if an_data["has_data"]:
+                st.markdown(f"**機構綜合投資評等：** `{an_data['rec_label']}`")
+                st.caption(f"📌 {an_data['rec_desc']}（共計 **{an_data['opinions']} 家** 內外資券商研究機構覆蓋）")
+
+                upside_pct = ((an_data['target_mean'] - res['close']) / res['close']) * 100 if res['close'] > 0 else 0
+                a_c1, a_c2 = st.columns(2)
+                a_c1.metric("機構共識平均目標價", f"{an_data['target_mean']:.2f} 元" if an_data['target_mean'] > 0 else "未揭露", f"{upside_pct:+.1f}% 潛在空間" if an_data['target_mean'] > 0 else "")
+                a_c2.metric("法人覆蓋機構數", f"{an_data['opinions']} 家")
+
+                if an_data['target_high'] > 0:
+                    st.caption(f"📊 法人區間分歧度：最低 **{an_data['target_low']:.2f} 元** ～ 最高 **{an_data['target_high']:.2f} 元**")
+            else:
+                st.info("💡 該標的暫無多數券商連續追蹤報告，系統已自動採用技術波段壓力計算目標獲利位。")
+
+            st.write("---")
+            st.markdown("### 📋 【精確下單執行卡】（直觀客觀，無模糊空間）")
+            if is_below_stop:
+                st.error("🚫 **當前禁止下單**：現價已跌破建議防守線，空方控盤，嚴禁逆勢摸底！")
+            else:
+                st.markdown(f"""
+                1. **建議進場區間**：**`{res['close']:.2f} 元`**（早盤回測 5MA 不破可分批布局）。
+                2. **波段防守點位**：**`{res['stop_loss']:.2f} 元`**（收盤破線立即退場，絕不凹單）。
+                3. **第一獲利目標**：**`{target_1:.2f} 元`**（達成 1.5R 盈虧比，強制賣出 1/2 入袋並上移防守至成本）。
+                4. **波段獲利目標**：**`{res['target_60d']:.2f} 元`**（對齊機構共識目標價或 60 日波段高點）。
+                """)
+
+        # 模組 2：決策結論與操作指引
+        with st.expander("📝 【決策結論與多空架構】", expanded=False):
             if is_below_stop:
                 st.error("### 🔴 現價已跌破建議防守線：嚴禁追價！")
                 st.write(f"- 當前價位（{res['close']:.2f} 元）低於防守點（{res['stop_loss']:.2f} 元）。")
@@ -836,7 +914,7 @@ if st.session_state.main_mode == "single":
             else:
                 st.error("### 🔴 暫緩進場：評價過高或短期均線下壓，現金為王")
 
-        # 模組 2：開盤即時撮合診斷（就地展開）
+        # 模組 3：開盤即時撮合動態
         with st.expander("⚡ 【開盤即時撮合動態 (TWSE 官方)】", expanded=False):
             st.markdown(f"**當前 K 棒型態：** `{res['k_type']}`")
             k1, k2 = st.columns(2)
@@ -846,7 +924,7 @@ if st.session_state.main_mode == "single":
             for d in res['opening_diag']:
                 st.write(f"• {d}")
 
-        # 模組 3：三均線矩陣（就地展開）
+        # 模組 4：三均線矩陣
         with st.expander("📏 【日 / 月 / 季線 位階矩陣】", expanded=False):
             st.markdown(f"**均線排列結構：** `{res['ma_alignment']}`")
             m1, m2, m3 = st.columns(3)
@@ -854,7 +932,7 @@ if st.session_state.main_mode == "single":
             m2.metric("月線 (20MA)", f"{res['ma_status']['ma20_val']:.2f}", f"{res['ma_status']['ma20_diff']:+.1f}%")
             m3.metric("季線 (60MA)", f"{res['ma_status']['ma60_val']:.2f}", f"{res['ma_status']['ma60_diff']:+.1f}%")
 
-        # 模組 4：體質護城河（就地展開）
+        # 模組 5：體質護城河
         fund_title = "💎 【ETF 專屬體質與配息分析】" if is_etf_asset else "💎 【企業基本面體質護城河】"
         with st.expander(fund_title, expanded=False):
             f_data = res['fund_data']
@@ -873,16 +951,16 @@ if st.session_state.main_mode == "single":
             for r in f_data['reasons']:
                 st.write(f"• {r}")
 
-        # 模組 5：階梯停利 SOP（就地展開）
+        # 模組 6：階梯停利 SOP
         with st.expander("🚪 【階梯式分階出場 SOP】", expanded=False):
             st.markdown(f"""
             - **初始防守停損**：跌破 **`{res['stop_loss']:.2f}` 元** 嚴格離場，絕不凹單。
             - **第一階段目標（減碼 1/2）**：達 **`{target_1:.2f}` 元**（1.5R 盈虧比），賣出半數部位並上移防守至成本價（鎖定保本）。
-            - **第二階段目標（波段收割）**：達 **`{res['target_60d']:.2f}` 元**（近 60 日波段壓力位）分批落袋。
+            - **第二階段目標（波段收割）**：達 **`{res['target_60d']:.2f}` 元** 分批落袋。
             - **移動停利（Trailing Stop）**：其餘部位收盤跌破 5 日線全數獲利了結。
             """)
 
-        # 模組 6：風控計算機（就地展開）
+        # 模組 7：部位風控計算機
         with st.expander("💰 【部位風控與建議張數計算機】", expanded=False):
             col_cap, col_risk = st.columns(2)
             with col_cap:
@@ -907,10 +985,10 @@ if st.session_state.main_mode == "single":
             b1.metric("單筆最大容許虧損", f"{int(max_risk_dollar):,} 元")
             b2.metric("建議最大進場張數", f"{suggested_lots} 張", help="同時受限於風險停損額與總現金購買力")
             b3, b4 = st.columns(2)
-            b3.metric("目標獲利區 (近60日高)", f"{res['target_60d']:.2f} 元")
+            b3.metric("目標獲利區", f"{res['target_60d']:.2f} 元")
             b4.metric("預期盈虧比 (R/R)", f"{rr_ratio:.2f} : 1")
 
-        # 模組 7：歷史勝率回測（就地展開）
+        # 模組 8：歷史勝率回測
         with st.expander("📊 【過去 1 年策略回測數據】", expanded=False):
             bt = backtest_strategy(df_stock)
             if bt:
@@ -923,7 +1001,7 @@ if st.session_state.main_mode == "single":
             else:
                 st.write("該標的歷史數據樣本不足以計算回測。")
 
-        # 模組 8：走勢圖表（就地展開）
+        # 模組 9：均線走勢圖
         with st.expander("📈 【均線價格走勢圖】", expanded=False):
             valid_cols = ['Close']
             for c in ['MA5', 'MA20', 'MA60']:
@@ -937,7 +1015,6 @@ elif st.session_state.main_mode == "etf":
     st.subheader("📊 ETF 旗艦量化策略雷達")
     st.caption("熱門 ETF 全方位即時體檢・配息防禦 × 均線動能 × 定期定額試算")
 
-    # 分類篩選（單排 4 欄）
     f1, f2, f3, f4 = st.columns(4)
     if f1.button("全部", type="primary" if st.session_state.etf_category_filter == "全部" else "secondary", use_container_width=True, key="filter_etf_all"):
         st.session_state.etf_category_filter = "全部"
@@ -1029,7 +1106,6 @@ elif st.session_state.main_mode == "etf":
 elif st.session_state.main_mode == "futures":
     st.subheader("⚡ 期貨與美台跨市場連動核心")
 
-    # 1. 台積電 ADR 換算卡片
     st.markdown("### 🏆 台積電 ADR (TSM) 即時換算")
     df_tsm_now = fetch_and_calc("TSM")
     df_2330_now = fetch_and_calc("2330.TW")
@@ -1056,7 +1132,6 @@ elif st.session_state.main_mode == "futures":
             st.info(f"⚖️ **合理溢價區間 ({premium_pct:+.1f}%)**")
     st.write("---")
 
-    # 2. 台指期貨基差診斷
     st.markdown("### 📊 台指期 (WTX) 與現貨基差 (Basis)")
     if df_market is not None and df_futures is not None:
         twii_close = df_market.iloc[-1]['Close']
@@ -1076,7 +1151,6 @@ elif st.session_state.main_mode == "futures":
             st.info("⚪ **正常平價價差**")
     st.write("---")
 
-    # 3. 國際主要期貨動能
     st.markdown("### 🌐 全球美股期貨與關鍵大宗商品")
     GLOBAL_FUT_LIST = [
         ("微那斯達克期 (NQ)", "NQ=F", "美股科技領先指標"),
