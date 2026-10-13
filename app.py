@@ -9,22 +9,19 @@ from concurrent.futures import ThreadPoolExecutor
 
 # 頁面配置
 st.set_page_config(
-    page_title="次日開市與即時量化決策站",
+    page_title="次日開市與即時量化決策站 (全市場旗艦版)",
     page_icon="📈",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
 
-# 手機端直覺觸控與字體最適化 CSS (徹底修復溢出與標題遮擋)
+# 手機端直覺觸控與字體最適化 CSS (雙欄鎖死、杜絕右滑溢出)
 st.markdown("""
 <style>
-    /* 1. 鎖死全站寬度，杜絕任何橫向捲軸與右滑溢出 */
     html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {
         overflow-x: hidden !important;
         max-width: 100vw !important;
     }
-
-    /* 2. 恢復頂部安全邊距，讓標題完整露出在 Streamlit 頂部黑條下方 */
     .block-container {
         padding-top: 3.6rem !important;
         padding-bottom: 2rem !important;
@@ -33,16 +30,13 @@ st.markdown("""
         max-width: 100% !important;
         overflow-x: hidden !important;
     }
-
-    /* 3. 標題尺寸最佳化：適度縮減至 1.4rem，單行顯示不換行、顯眼清晰 */
     h1 {
-        font-size: 1.40rem !important;
+        font-size: 1.38rem !important;
         font-weight: 800 !important;
         line-height: 1.35 !important;
         margin-top: 0.2rem !important;
         margin-bottom: 0.5rem !important;
         padding: 0 !important;
-        display: block !important;
         letter-spacing: -0.01em !important;
     }
     h2 {
@@ -55,32 +49,26 @@ st.markdown("""
         font-size: 1.05rem !important;
         font-weight: 600 !important;
     }
-
-    /* 4. 按鈕字體放大並加粗 (1.08rem)，字型清晰、好按好讀 */
     div.stButton > button {
         width: 100% !important;
-        min-height: 3.2rem !important;
-        font-size: 1.08rem !important;
+        min-height: 3.1rem !important;
+        font-size: 1.05rem !important;
         font-weight: 700 !important;
         border-radius: 12px !important;
-        margin-bottom: 0.35rem !important;
-        padding: 0.4rem 0.6rem !important;
-        line-height: 1.3 !important;
-        letter-spacing: 0.02em !important;
+        margin-bottom: 0.3rem !important;
+        padding: 0.4rem 0.5rem !important;
+        line-height: 1.25 !important;
+        letter-spacing: 0.01em !important;
     }
-
-    /* 5. 輸入框高度與文字大小調和 */
     div.stTextInput > div > div > input {
-        height: 3.0rem !important;
-        font-size: 1.1rem !important;
+        height: 2.9rem !important;
+        font-size: 1.05rem !important;
         border-radius: 10px !important;
     }
-
-    /* 6. 數值指標卡片字體最適化 */
     div[data-testid="stMetric"] {
         background-color: rgba(128, 128, 128, 0.08);
         border: 1px solid rgba(128, 128, 128, 0.18);
-        padding: 0.6rem 0.8rem !important;
+        padding: 0.55rem 0.75rem !important;
         border-radius: 12px;
         margin-bottom: 0.35rem;
     }
@@ -92,8 +80,6 @@ st.markdown("""
         font-size: 1.35rem !important;
         font-weight: 700 !important;
     }
-
-    /* 7. 折疊卡片標題字體 */
     .streamlit-expanderHeader {
         font-size: 1.02rem !important;
         font-weight: 600 !important;
@@ -105,6 +91,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 TAIPEI_TZ = timezone(timedelta(hours=8))
+NY_TZ = timezone(timedelta(hours=-4))  # 美東標準時區 (含日光節約概括)
 
 # ----------------- 通行密碼防護 -----------------
 try:
@@ -119,7 +106,7 @@ if ACCESS_PASSWORD is None:
     1. 前往 Streamlit Cloud 管理後台（App Settings > Secrets）。
     2. 新增設定內容：
     ```toml
-    PASSWORD = "您的專屬複雜密碼"
+    PASSWORD = "您的專屬密碼"
     ```
     3. 儲存後重新整理本頁面即可正常啟動。
     """)
@@ -175,11 +162,14 @@ def normalize_ticker(ticker: str):
         return t[:-4], "otc"
     if t.endswith(".TW"):
         return t[:-3], "tse"
-    return t, "tse"
+    return t, "us"
 
 # ----------------- 權威 API 1：臺灣證券交易所官方即時行情 -----------------
 def fetch_twse_realtime(ticker: str):
     code, market = normalize_ticker(ticker)
+    if market == "us":
+        return None
+
     ex_ch = f"{market}_{code}.tw"
     url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={ex_ch}&json=1&delay=0"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -312,7 +302,7 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
     try:
         obj = yf.Ticker(ticker)
         df = obj.history(period=period)
-        if df.empty or len(df) < 20:
+        if df.empty or len(df) < 15:
             return None
 
         if isinstance(df.columns, pd.MultiIndex):
@@ -320,6 +310,7 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
 
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
 
+        # 台股限定：整合 TWSE 盤中撮合
         if ".TW" in ticker.upper() or ".TWO" in ticker.upper():
             twse_live = fetch_twse_realtime(ticker)
             if twse_live and twse_live["match_price"] > 0:
@@ -379,7 +370,7 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
 # ----------------- 基本面與 ETF 數據 -----------------
 @st.cache_data(ttl=7200)
 def fetch_fundamentals(ticker: str):
-    clean_code, _ = normalize_ticker(ticker)
+    clean_code, market = normalize_ticker(ticker)
     try:
         t = yf.Ticker(ticker)
         info = t.info or {}
@@ -404,7 +395,7 @@ def fetch_fundamentals(ticker: str):
                     "beta": None,
                     "nav": nav_val,
                     "category": info.get('category', '指數股票型基金 (ETF)'),
-                    "reasons": ["⚠️ 查無足夠之配息率與 Beta 數據，未計入基本面評分（比重已動態切換至技術面）"]
+                    "reasons": ["⚠️ 查無足夠之配息率與 Beta 數據，未計入基本面評分"]
                 }
 
             fund_score = 0
@@ -460,7 +451,7 @@ def fetch_fundamentals(ticker: str):
                     "op_margin": None,
                     "pe": None,
                     "debt_ratio": None,
-                    "reasons": ["⚠️ 查無足夠之財報數據，未計入基本面評分（比重已動態切換至技術面）"]
+                    "reasons": ["⚠️ 查無足夠之財報數據，未計入基本面評分"]
                 }
 
             roe_val = safe_float(roe_raw * 100 if roe_raw is not None else None, default=None)
@@ -494,7 +485,7 @@ def fetch_fundamentals(ticker: str):
             if pe_val is not None:
                 if 8 <= pe_val <= 25:
                     fund_score += 10
-                    reasons.append(f"本益比 {pe_val:.1f}x，估值處安全區間")
+                    reasons.append(f"本益比 {pe_val:.1f}x，估值處合理區間")
                 elif pe_val < 8:
                     fund_score += 7
                     reasons.append(f"本益比低估 ({pe_val:.1f}x)")
@@ -505,7 +496,7 @@ def fetch_fundamentals(ticker: str):
             if de_val is not None:
                 if de_val <= 80:
                     fund_score += 10
-                    reasons.append(f"負債比率健康 ({de_val:.1f}%)，財務抗風險力強")
+                    reasons.append(f"負債比率健康 ({de_val:.1f}%)，財務防禦佳")
                 elif de_val <= 150:
                     fund_score += 6
                     reasons.append(f"負債比率適中 ({de_val:.1f}%)")
@@ -589,8 +580,8 @@ def analyze_opening_and_ma(df_stock, live_info=None):
 
     return ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag
 
-# ----------------- 歷史回測引擎 -----------------
-def backtest_strategy(df_stock):
+# ----------------- 歷史回測引擎 (區分台股/美股摩擦成本) -----------------
+def backtest_strategy(df_stock, is_us=False):
     if len(df_stock) < 60:
         return None
 
@@ -604,7 +595,8 @@ def backtest_strategy(df_stock):
     n_bars = len(df_stock)
     trade_returns = []
     i = 0
-    COST_RATE = 0.0045
+    # 美股手續費率極低，實務假設 0.1%；台股含 0.3% 證券交易稅與手續費約 0.45%
+    cost_rate = 0.0010 if is_us else 0.0045
 
     while i < n_bars - 6:
         if signals.iloc[i]:
@@ -616,7 +608,7 @@ def backtest_strategy(df_stock):
                 exit_p = safe_float(df_stock['Close'].iloc[i + 6])
 
             if entry_p > 0 and exit_p > 0:
-                net_ret = ((exit_p - entry_p) / entry_p - COST_RATE) * 100.0
+                net_ret = ((exit_p - entry_p) / entry_p - cost_rate) * 100.0
                 trade_returns.append(net_ret)
                 i += 6
                 continue
@@ -724,11 +716,11 @@ def analyze_forex_data():
 
     return res
 
-# ----------------- 全維度綜合量化評估 -----------------
-def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, forex_info):
+# ----------------- 全維度綜合量化評估 (支援台股與美股) -----------------
+def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, forex_info, is_us=False):
     fund_data = fetch_fundamentals(ticker)
     analyst_data = fetch_analyst_consensus(ticker)
-    live_twse = fetch_twse_realtime(ticker)
+    live_twse = fetch_twse_realtime(ticker) if not is_us else None
     ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag = analyze_opening_and_ma(df_stock, live_twse)
 
     last_stk = df_stock.iloc[-1]
@@ -738,46 +730,68 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
 
     global_score = 0
     global_reasons = []
-    try:
-        if df_tsm is not None and len(df_tsm) >= 2:
-            tsm_change = ((df_tsm['Close'].iloc[-1] - df_tsm['Close'].iloc[-2]) / df_tsm['Close'].iloc[-2]) * 100
-            if tsm_change >= 1.5:
-                global_score += 15
-                global_reasons.append(f"TSM ADR 大漲 ({tsm_change:+.1f}%)，國際連動強勁")
-            elif tsm_change > 0:
+
+    if is_us:
+        # 美股專屬宏觀連動：參考標普500 (^GSPC) 或 那斯達克 (^IXIC)
+        try:
+            if df_sox is not None and len(df_sox) >= 2:
+                sox_chg = ((df_sox['Close'].iloc[-1] - df_sox['Close'].iloc[-2]) / df_sox['Close'].iloc[-2]) * 100
+                if sox_chg >= 1.5:
+                    global_score += 15
+                    global_reasons.append(f"費半大漲 ({sox_chg:+.1f}%)，科技動能強勁")
+                elif sox_chg > 0:
+                    global_score += 10
+                    global_reasons.append(f"費半小漲 ({sox_chg:+.1f}%)，美股氛圍偏多")
+                else:
+                    global_score += 5
+                    global_reasons.append(f"費半回檔 ({sox_chg:+.1f}%)，注意震盪")
+            else:
                 global_score += 10
-                global_reasons.append(f"TSM ADR 小漲 ({tsm_change:+.1f}%)，美股氛圍平穩偏多")
-            elif tsm_change > -1.5:
-                global_score += 6
-                global_reasons.append(f"TSM ADR 小跌 ({tsm_change:+.1f}%)，留意早盤震盪")
+        except Exception:
+            global_score += 10
+    else:
+        # 台股專屬宏觀連動：TSM ADR 與外匯
+        try:
+            if df_tsm is not None and len(df_tsm) >= 2:
+                tsm_change = ((df_tsm['Close'].iloc[-1] - df_tsm['Close'].iloc[-2]) / df_tsm['Close'].iloc[-2]) * 100
+                if tsm_change >= 1.5:
+                    global_score += 15
+                    global_reasons.append(f"TSM ADR 大漲 ({tsm_change:+.1f}%)，國際連動強勁")
+                elif tsm_change > 0:
+                    global_score += 10
+                    global_reasons.append(f"TSM ADR 小漲 ({tsm_change:+.1f}%)，美股平穩偏多")
+                elif tsm_change > -1.5:
+                    global_score += 6
+                    global_reasons.append(f"TSM ADR 小跌 ({tsm_change:+.1f}%)，留意開盤震盪")
+                else:
+                    global_reasons.append(f"TSM ADR 重挫 ({tsm_change:+.1f}%)，嚴防跳空走弱")
             else:
-                global_reasons.append(f"TSM ADR 重挫 ({tsm_change:+.1f}%)，嚴防開盤恐慌跳空")
-        else:
+                global_score += 8
+                global_reasons.append("國際美股數據採中立基準分")
+
+            if forex_info.get("has_real_twd"):
+                if "升值" in forex_info['twd_status']:
+                    global_reasons.append(f"新台幣走升 ({forex_info['twd_rate']:.2f})，熱錢湧入")
+                else:
+                    global_reasons.append(f"新台幣匯率整理 ({forex_info['twd_rate']:.2f})")
+        except Exception:
             global_score += 8
-            global_reasons.append("國際美股數據採中立基準分")
 
-        if forex_info.get("has_real_twd"):
-            if "升值" in forex_info['twd_status']:
-                global_reasons.append(f"新台幣走升 ({forex_info['twd_rate']:.2f})，熱錢匯入台股")
-            else:
-                global_reasons.append(f"新台幣匯率整理 ({forex_info['twd_rate']:.2f})")
-    except Exception:
-        global_score = 8
-        global_reasons.append("國際數據採基準分")
-
+    # 大盤架構
     mkt_score = 0
     mkt_reasons = []
     if df_market is not None and not df_market.empty:
         last_mkt = df_market.iloc[-1]
         if last_mkt['Close'] > last_mkt['MA20']:
             mkt_score += 12
-            mkt_reasons.append("大盤站上月線 (20MA)，多方掌握發球權")
+            mkt_reasons.append("主要大盤站上月線 (20MA)，多方主導")
         else:
             mkt_reasons.append("大盤跌破月線，系統性拉回風險偏高")
         if last_mkt['MA20'] > last_mkt['MA60']:
             mkt_score += 8
             mkt_reasons.append("大盤季線多頭架構 (20MA > 60MA)")
 
+    # 技術量價
     tech_score = 0
     tech_reasons = []
     vol_ratio = safe_float(last_stk['Volume']) / (safe_float(last_stk['Vol_MA5']) + 1e-9)
@@ -851,7 +865,8 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
         "fund_data": fund_data,
         "analyst_data": analyst_data,
         "forex_info": forex_info,
-        "live_info": live_twse
+        "live_info": live_twse,
+        "is_us": is_us
     }
 
 def calculate_adr_parity(tsm_usd, tw_twd, usdtwd_rate):
@@ -925,76 +940,91 @@ EARNINGS_CALLS = [
 
 # ----------------- 狀態初始化 -----------------
 if "main_mode" not in st.session_state:
-    st.session_state.main_mode = "single"
+    st.session_state.main_mode = "tw_stock"
 
-if "selected_ticker" not in st.session_state:
-    st.session_state.selected_ticker = "2330.TW"
+if "selected_tw_ticker" not in st.session_state:
+    st.session_state.selected_tw_ticker = "2330.TW"
 
-if "analysis_cache" not in st.session_state:
-    st.session_state.analysis_cache = None
+if "selected_us_ticker" not in st.session_state:
+    st.session_state.selected_us_ticker = "NVDA"
+
+if "analysis_cache_tw" not in st.session_state:
+    st.session_state.analysis_cache_tw = None
+
+if "analysis_cache_us" not in st.session_state:
+    st.session_state.analysis_cache_us = None
 
 if "etf_category_filter" not in st.session_state:
     st.session_state.etf_category_filter = "全部"
 
 # ----------------- 頂部導航與功能說明書 -----------------
-st.title("📱 股期決策旗艦站 (機構版)")
+st.title("📱 股期決策旗艦站 (跨市場機構版)")
 
 with st.expander("📘 點此查看【系統現行版本完整功能清單與架構指南】", expanded=False):
     st.markdown("""
-    本系統採用多資料源交叉校驗與統計風控模型：
+    本系統現已全面實現**台股、美股、台期、美期獨立分工監控**：
     
-    1. **🎯 權威分析師共識 ＆ 精確下單指引**：
-       - 直連全球與本土主流券商研究報告資料庫。
-       - 揭露**機構共識平均目標價**、**潛在報酬空間 (%)**、**法人分歧區間**與**精確下單執行卡**。
+    1. **🔍 台股全維度深度體檢**：
+       - 直連 **臺灣證交所 (TWSE)** 撮合主機（單位自動乘 1000 股對齊），顯示即時開盤跳空與紅黑 K 棒。
+       - 均線位階 (5/20/60MA)、階梯停利 SOP、建議張數風控計算機、無前視偏誤回測（扣除 0.45% 摩擦成本、真實 MDD）。
     
-    2. **🔍 個股全維度深度體檢**：
-       - 整合 **臺灣證交所 (TWSE)** 撮合主機，嚴格單位對齊（張換算股），杜絕量能失真。
-       - 撮合新鮮度標記（區分盤中即時 vs 盤後收盤資料）。
-       - 三均線位階矩陣 (5MA / 20MA / 60MA)、階梯停利 SOP、購買力風控計算機。
-       - **無前視偏誤歷史回測**：次日開盤進場、扣除 0.45% 實務交易成本，以權益曲線精算真實最大回撤 (MDD)。
+    2. **🇺🇸 美股即時診斷專區（全新獨立同規格）**：
+       - 支援任何美股標的（如 NVDA, AAPL, TSLA, MSFT, TSM 等）。
+       - 具備同等 9 大維度：開盤跳空與 K 棒診斷、5/20/60MA 矩陣、基本面護城河 (ROE/營利率/PE/DE)、華爾街分析師平均目標價與評等。
+       - **美股專屬執行卡與風控**：以「股 (Shares)」為單位精算下單規模，扣除美股實務手續費進行 1 年回測。
     
-    3. **📊 ETF 策略專區**：
-       - 涵蓋市值型、高股息、海外科技與長天期美債。
-       - 支援 `.TWO` 櫃買代碼精確解析，數據缺失時絕不灌入假分數。
+    3. **🇹🇼 台灣期貨獨立專區（全新獨立）**：
+       - 即時台指期貨 (`WTX=F`) 與加權指數 (`^TWII`) 點位追蹤。
+       - 精算實質基差 (Basis)，導入期現貨交易日期交叉驗證，杜絕假基差。
     
-    4. **⚡ 期貨與美台跨市場連動**：
-       - **台積電 ADR (TSM) 1:5 理論換算** 與即時溢價率診斷。
-       - **台指期 (WTX) 跨市場日期校驗**：期現貨不同步時明確警示，絕不拿現貨冒充。
+    4. **📈 美股期貨獨立專區（全新獨立）**：
+       - 微那斯達克 (`NQ=F`)、微標普 (`ES=F`)、道瓊期 (`YM=F`)、羅素2000 (`RTY=F`)。
+       - 5MA / 20MA 多空架構與科技 vs 價值輪動評估。
     
-    5. **💎 體質績優雷達 ＆ 📢 法說會新聞速查**：
-       - 雙重實質濾網；財報缺失時不灌假資料，自動動態重新分配技術權重。
+    5. **📊 ETF 策略專區**：
+       - 市值型、高股息、海外科技與長天期美債四大分類雷達；微笑曲線定期定額加碼計算機。
     
-    6. **💱 全球外匯與熱錢大盤**：
-       - 直連臺灣銀行官方牌告匯率系統，即時追蹤 USD/TWD、美元指數 (DXY) 與日圓套利平倉風險。
+    6. **💎 體質雷達 ＆ 📢 法說重大訊息 ＆ 💱 全球外匯**：
+       - 藍籌雙重量化濾網、個股即時重大新聞速查、台銀官方 USD/TWD 與日圓平倉風險監控。
     """)
 
-# 頂部六大模式切換 (手機端採用穩定的 2x3 大按鈕排版，字體加粗加大)
+# 頂部八大模式切換 (手機端 2x4 雙欄大卡片，文字放大居中)
 r1_c1, r1_c2 = st.columns(2)
 with r1_c1:
-    if st.button("🔍 個股診斷", type="primary" if st.session_state.main_mode == "single" else "secondary", use_container_width=True, key="m_nav_single"):
-        st.session_state.main_mode = "single"
+    if st.button("🔍 台股診斷", type="primary" if st.session_state.main_mode == "tw_stock" else "secondary", use_container_width=True, key="m_nav_tw_stock"):
+        st.session_state.main_mode = "tw_stock"
         st.rerun()
 with r1_c2:
-    if st.button("📊 ETF 專區", type="primary" if st.session_state.main_mode == "etf" else "secondary", use_container_width=True, key="m_nav_etf"):
-        st.session_state.main_mode = "etf"
+    if st.button("🇺🇸 美股診斷", type="primary" if st.session_state.main_mode == "us_stock" else "secondary", use_container_width=True, key="m_nav_us_stock"):
+        st.session_state.main_mode = "us_stock"
         st.rerun()
 
 r2_c1, r2_c2 = st.columns(2)
 with r2_c1:
-    if st.button("⚡ 期貨連動", type="primary" if st.session_state.main_mode == "futures" else "secondary", use_container_width=True, key="m_nav_futures"):
-        st.session_state.main_mode = "futures"
+    if st.button("🇹🇼 台灣期貨", type="primary" if st.session_state.main_mode == "tw_futures" else "secondary", use_container_width=True, key="m_nav_tw_futures"):
+        st.session_state.main_mode = "tw_futures"
         st.rerun()
 with r2_c2:
-    if st.button("💎 體質雷達", type="primary" if st.session_state.main_mode == "market" else "secondary", use_container_width=True, key="m_nav_market"):
-        st.session_state.main_mode = "market"
+    if st.button("📈 美股期貨", type="primary" if st.session_state.main_mode == "us_futures" else "secondary", use_container_width=True, key="m_nav_us_futures"):
+        st.session_state.main_mode = "us_futures"
         st.rerun()
 
 r3_c1, r3_c2 = st.columns(2)
 with r3_c1:
+    if st.button("📊 ETF 專區", type="primary" if st.session_state.main_mode == "etf" else "secondary", use_container_width=True, key="m_nav_etf"):
+        st.session_state.main_mode = "etf"
+        st.rerun()
+with r3_c2:
+    if st.button("💎 體質雷達", type="primary" if st.session_state.main_mode == "market" else "secondary", use_container_width=True, key="m_nav_market"):
+        st.session_state.main_mode = "market"
+        st.rerun()
+
+r4_c1, r4_c2 = st.columns(2)
+with r4_c1:
     if st.button("📢 法說消息", type="primary" if st.session_state.main_mode == "events" else "secondary", use_container_width=True, key="m_nav_events"):
         st.session_state.main_mode = "events"
         st.rerun()
-with r3_c2:
+with r4_c2:
     if st.button("💱 外匯大盤", type="primary" if st.session_state.main_mode == "forex" else "secondary", use_container_width=True, key="m_nav_forex"):
         st.session_state.main_mode = "forex"
         st.rerun()
@@ -1006,218 +1036,332 @@ df_market = fetch_and_calc("^TWII")
 df_futures = fetch_and_calc("WTX=F")
 df_tsm = fetch_and_calc("TSM")
 df_sox = fetch_and_calc("^SOX")
+df_spx = fetch_and_calc("^GSPC")
 global_forex = analyze_forex_data()
 
-# ================= 模式 1：個股全維度深度體檢 =================
-if st.session_state.main_mode == "single":
-    # 快捷股票切換：改為 2x2 雙欄排版，防止在小螢幕撐爆水平寬度
+# ================= 模組共用渲染器 (台股 / 美股共用相同 9 大維度) =================
+def render_stock_analysis(res, df_stock, is_us=False):
+    is_below_stop = res['close'] <= res['stop_loss']
+    risk_unit = max(res['close'] - res['stop_loss'], 0.0)
+    target_1 = res['close'] + (1.5 * max(risk_unit, res['close'] * 0.03))
+    is_etf_asset = res['fund_data'].get('is_etf', False)
+    an_data = res['analyst_data']
+    unit_name = "股 (Shares)" if is_us else "張 (Lots)"
+    currency_sym = "USD" if is_us else "元"
+
+    if res.get("live_info"):
+        status_badge = res['live_info'].get('status_label', '⚪ 歷史報價')
+        st.caption(f"⚡ **TWSE 撮合系統** ｜ {status_badge} ｜ 時間：{res['live_info']['time']}")
+    elif is_us:
+        st.caption(f"⚡ **美股即時行情連線** ｜ 幣別：USD ｜ 資料更新時序完整")
+
+    c1, c2 = st.columns(2)
+    c1.metric("綜合決策總分", f"{res['total_score']} / 100")
+    c2.metric("最新成交價", f"{res['close']:.2f} {currency_sym}")
+
+    c3, c4 = st.columns(2)
+    c3.metric("建議防守價 (停損)", f"{res['stop_loss']:.2f} {currency_sym}")
+    risk_pct = (risk_unit / res['close']) * 100 if not is_below_stop else 0.0
+    c4.metric("最大預期風險", f"{risk_pct:.2f}%" if not is_below_stop else "已在防守線下")
+
+    # 1. 權威機構分析師共識 ＆ 精確下單指引
+    with st.expander("🎯 【權威分析師共識 ＆ 精確下單指引】", expanded=True):
+        if an_data["has_data"]:
+            st.markdown(f"**機構綜合投資評等：** `{an_data['rec_label']}`")
+            st.caption(f"📌 {an_data['rec_desc']}（共計 **{an_data['opinions']} 家** 券商機構追蹤）")
+
+            upside_pct = ((an_data['target_mean'] - res['close']) / res['close']) * 100 if res['close'] > 0 else 0
+            a_c1, a_c2 = st.columns(2)
+            a_c1.metric("機構共識平均目標價", f"{an_data['target_mean']:.2f} {currency_sym}" if an_data['target_mean'] > 0 else "未揭露", f"{upside_pct:+.1f}% 潛在空間" if an_data['target_mean'] > 0 else "")
+            a_c2.metric("法人覆蓋機構數", f"{an_data['opinions']} 家")
+
+            if an_data['target_high'] > 0:
+                st.caption(f"📊 法人區間分歧度：最低 **{an_data['target_low']:.2f}** ～ 最高 **{an_data['target_high']:.2f} {currency_sym}**")
+        else:
+            st.info("💡 該標的暫無多數券商連續追蹤報告，目標價已依波段動態空間推算。")
+
+        st.write("---")
+        st.markdown("### 📋 【精確下單執行卡】")
+        if is_below_stop:
+            st.error("🚫 **當前禁止下單**：現價已跌破建議防守線，空方控盤，嚴禁逆勢摸底！")
+        else:
+            st.markdown(f"""
+            1. **建議進場區間**：**`{res['close']:.2f} {currency_sym}`**（回測 5MA 不破分批布局）。
+            2. **波段防守點位**：**`{res['stop_loss']:.2f} {currency_sym}`**（收盤破線立即退場，絕不凹單）。
+            3. **第一獲利目標**：**`{target_1:.2f} {currency_sym}`**（1.5R 盈虧比，賣出 1/2 入袋並上移防守至成本）。
+            4. **波段獲利目標**：**`{res['target_60d']:.2f} {currency_sym}`**（對齊機構目標價或波段高點擴展區）。
+            """)
+
+    # 2. 決策結論與多空架構
+    with st.expander("📝 【決策結論與多空架構】", expanded=False):
+        if is_below_stop:
+            st.error(f"### 🔴 現價已跌破建議防守線（{res['stop_loss']:.2f} {currency_sym}）：嚴禁追價！")
+        elif res['total_score'] >= 75:
+            st.success(f"### 🟢 積極偏多：體質與量價動能同步翻多，適合進場 (防守: {res['stop_loss']:.2f} {currency_sym})")
+        elif 60 <= res['total_score'] < 75:
+            st.warning("### 🟡 穩健觀察：指標整理或分歧，僅限輕倉試單")
+        else:
+            st.error("### 🔴 暫緩進場：評價過高或短期均線下壓，現金為王")
+
+    # 3. 開盤即時撮合動態
+    with st.expander("⚡ 【開盤即時撮合動態】", expanded=False):
+        st.markdown(f"**當前 K 棒型態：** `{res['k_type']}`")
+        k1, k2 = st.columns(2)
+        k1.metric("開盤跳空幅度", f"{res['gap_pct']:+.2f}%")
+        k2.metric("開盤至今漲跌", f"{res['intraday_pct']:+.2f}%")
+        st.write("---")
+        for d in res['opening_diag']:
+            st.write(f"• {d}")
+
+    # 4. 三均線矩陣
+    with st.expander("📏 【日 / 月 / 季線 位階矩陣】", expanded=False):
+        st.markdown(f"**均線排列結構：** `{res['ma_alignment']}`")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("日線 (5MA)", f"{res['ma_status']['ma5_val']:.2f}", f"{res['ma_status']['ma5_diff']:+.1f}%")
+        m2.metric("月線 (20MA)", f"{res['ma_status']['ma20_val']:.2f}", f"{res['ma_status']['ma20_diff']:+.1f}%")
+        m3.metric("季線 (60MA)", f"{res['ma_status']['ma60_val']:.2f}", f"{res['ma_status']['ma60_diff']:+.1f}%")
+
+    # 5. 體質護城河
+    fund_title = "💎 【ETF 專屬體質與配息分析】" if is_etf_asset else "💎 【企業基本面體質護城河】"
+    with st.expander(fund_title, expanded=False):
+        f_data = res['fund_data']
+        if not f_data.get("has_data", False):
+            st.warning("⚠️ 該標的未揭露足夠之財報/配息數據，系統已將基本面評分排除，並自動重新權衡動能指標。")
+        elif is_etf_asset:
+            f1, f2 = st.columns(2)
+            f1.metric("預估年化殖利率", f"{f_data['yield']:.1f}%" if f_data['yield'] is not None else "未揭露")
+            f2.metric("Beta 波動係數", f"{f_data['beta']:.2f}" if f_data['beta'] is not None else "未揭露")
+        else:
+            f1, f2 = st.columns(2)
+            f1.metric("ROE 股東權益報酬率", f"{f_data['roe']:.1f}%" if f_data['roe'] is not None else "無數據")
+            f2.metric("營業利益率", f"{f_data['op_margin']:.1f}%" if f_data['op_margin'] is not None else "無數據")
+            f3, f4 = st.columns(2)
+            f3.metric("本益比 (PE)", f"{f_data['pe']:.1f}x" if f_data['pe'] is not None else "無數據")
+            f4.metric("負債比率 (D/E)", f"{f_data['debt_ratio']:.1f}%" if f_data['debt_ratio'] is not None else "無數據")
+        st.write("---")
+        for r in f_data.get('reasons', []):
+            st.write(f"• {r}")
+
+    # 6. 階梯停利 SOP
+    with st.expander("🚪 【階梯式分階出場 SOP】", expanded=False):
+        st.markdown(f"""
+        - **初始防守停損**：跌破 **`{res['stop_loss']:.2f}` {currency_sym}** 嚴格離場，絕不凹單。
+        - **第一階段目標（減碼 1/2）**：達 **`{target_1:.2f}` {currency_sym}**（1.5R 盈虧比），賣出半數部位並上移防守至成本價（鎖定保本）。
+        - **第二階段目標（波段收割）**：達 **`{res['target_60d']:.2f}` {currency_sym}** 分批落袋。
+        - **移動停利（Trailing Stop）**：其餘部位收盤跌破 5 日線全數獲利了結。
+        """)
+
+    # 7. 部位風控計算機 (區分美股股數 vs 台股張數)
+    with st.expander(f"💰 【部位風控與建議{unit_name}計算機】", expanded=False):
+        col_cap, col_risk = st.columns(2)
+        with col_cap:
+            default_cap = 50000 if is_us else 1000000
+            cap_step = 5000 if is_us else 100000
+            cap_label = "總操作資金 (USD)" if is_us else "總操作資金 (NTD)"
+            total_capital = st.number_input(cap_label, value=default_cap, step=cap_step, key=f"calc_cap_{ticker_input}")
+        with col_risk:
+            risk_tolerance = st.slider("單筆最大承受損失比率 (%)", min_value=0.5, max_value=3.0, value=1.0, step=0.1, key=f"calc_risk_{ticker_input}")
+
+        max_risk_dollar = total_capital * (risk_tolerance / 100.0)
+        multiplier = 1.0 if is_us else 1000.0
+
+        if is_below_stop:
+            st.error(f"⚠️ 警告：當前價格已在停損價位之下，建議買進：0 {unit_name}！")
+            suggested_pos = 0
+            rr_ratio = 0.0
+        else:
+            loss_per_unit = risk_unit * multiplier
+            risk_based_pos = int(max_risk_dollar // loss_per_unit) if loss_per_unit > 0 else 0
+            capital_max_pos = int(total_capital // (res['close'] * multiplier)) if res['close'] > 0 else 0
+            suggested_pos = min(risk_based_pos, capital_max_pos)
+            potential_reward = max(res['target_60d'] - res['close'], 0)
+            rr_ratio = potential_reward / risk_unit if risk_unit > 0 else 0
+
+        b1, b2 = st.columns(2)
+        b1.metric("單筆最大容許虧損", f"{int(max_risk_dollar):,} {currency_sym}")
+        b2.metric(f"建議最大進場數量", f"{suggested_pos} {unit_name}")
+        b3, b4 = st.columns(2)
+        b3.metric("目標獲利區", f"{res['target_60d']:.2f} {currency_sym}")
+        b4.metric("預期盈虧比 (R/R)", f"{rr_ratio:.2f} : 1")
+
+    # 8. 無前視偏誤回測
+    with st.expander("📊 【過去 1 年策略回測數據 (無前視偏誤・單部位模型)】", expanded=False):
+        bt = backtest_strategy(df_stock, is_us=is_us)
+        if bt:
+            bt1, bt2 = st.columns(2)
+            bt1.metric("近 1 年訊號次數", f"{bt['count']} 次")
+            bt2.metric("持有 5 日勝率", f"{bt['win_rate']:.1f}%")
+            fee_note = "已扣除 0.1% 美股摩擦成本" if is_us else "已扣除 0.45% 台股稅費"
+            bt3, bt4 = st.columns(2)
+            bt3.metric("平均淨報酬率", f"{bt['avg_return']:+.2f}%", help=fee_note)
+            bt4.metric("真實最大回撤 (MDD)", f"{bt['mdd']:.2f}%", help="連續權益曲線之最大峰谷回撤")
+            st.caption(f"📌 單部位循序進出（持倉中不重複進場）、單次最差交易：`{bt['worst_loss']:.2f}%`")
+        else:
+            st.write("該標的歷史數據樣本不足以計算有效回測。")
+
+    # 9. 均線走勢圖
+    with st.expander("📈 【均線價格走勢圖】", expanded=False):
+        valid_cols = ['Close']
+        for c in ['MA5', 'MA20', 'MA60']:
+            if c in df_stock.columns and df_stock[c].notna().sum() > 5:
+                valid_cols.append(c)
+        chart_data = df_stock[valid_cols].dropna().tail(60)
+        st.line_chart(chart_data)
+
+# ================= 模式 1：🔍 台股診斷 =================
+if st.session_state.main_mode == "tw_stock":
+    st.subheader("🔍 台股全維度深度體檢")
     qh1, qh2 = st.columns(2)
     with qh1:
         if st.button("台積電 (2330)", use_container_width=True, key="qp_2330"):
-            st.session_state.selected_ticker = "2330.TW"
-            st.session_state.analysis_cache = None
+            st.session_state.selected_tw_ticker = "2330.TW"
+            st.session_state.analysis_cache_tw = None
             st.rerun()
         if st.button("鴻海 (2317)", use_container_width=True, key="qp_2317"):
-            st.session_state.selected_ticker = "2317.TW"
-            st.session_state.analysis_cache = None
+            st.session_state.selected_tw_ticker = "2317.TW"
+            st.session_state.analysis_cache_tw = None
             st.rerun()
     with qh2:
         if st.button("聯發科 (2454)", use_container_width=True, key="qp_2454"):
-            st.session_state.selected_ticker = "2454.TW"
-            st.session_state.analysis_cache = None
+            st.session_state.selected_tw_ticker = "2454.TW"
+            st.session_state.analysis_cache_tw = None
             st.rerun()
         if st.button("元大台灣50 (0050)", use_container_width=True, key="qp_0050"):
-            st.session_state.selected_ticker = "0050.TW"
-            st.session_state.analysis_cache = None
+            st.session_state.selected_tw_ticker = "0050.TW"
+            st.session_state.analysis_cache_tw = None
             st.rerun()
 
     col_input, col_btn = st.columns([2.4, 1.6])
     with col_input:
-        ticker_input = st.text_input("輸入代碼", value=st.session_state.selected_ticker, label_visibility="collapsed", key="ticker_input_field")
+        ticker_input = st.text_input("輸入台股代碼", value=st.session_state.selected_tw_ticker, label_visibility="collapsed", key="tw_ticker_field")
     with col_btn:
-        exec_clicked = st.button("🚀 執行診斷", type="primary", use_container_width=True, key="run_single_analysis_btn")
+        exec_clicked = st.button("🚀 診斷台股", type="primary", use_container_width=True, key="run_tw_btn")
 
     if exec_clicked:
-        with st.spinner("連線 TWSE 撮合與權威機構資料庫中..."):
-            df_stock = fetch_and_calc(ticker_input.strip())
-            if df_stock is not None:
-                res = analyze_full_stock(ticker_input.strip(), df_stock, df_market, df_futures, df_tsm, df_sox, global_forex)
-                st.session_state.analysis_cache = (res, df_stock)
+        with st.spinner("連線 TWSE 撮合主機計算中..."):
+            df_stk = fetch_and_calc(ticker_input.strip())
+            if df_stk is not None:
+                r = analyze_full_stock(ticker_input.strip(), df_stk, df_market, df_futures, df_tsm, df_sox, global_forex, is_us=False)
+                st.session_state.analysis_cache_tw = (r, df_stk)
             else:
-                st.session_state.analysis_cache = None
+                st.session_state.analysis_cache_tw = None
                 st.error("無法取得該標的行情數據，請確認代碼是否正確。")
 
-    if st.session_state.analysis_cache is not None:
-        res, df_stock = st.session_state.analysis_cache
-        is_below_stop = res['close'] <= res['stop_loss']
-        risk_unit = max(res['close'] - res['stop_loss'], 0.0)
-        target_1 = res['close'] + (1.5 * max(risk_unit, res['close'] * 0.03))
-        is_etf_asset = res['fund_data'].get('is_etf', False)
-        an_data = res['analyst_data']
+    if st.session_state.analysis_cache_tw is not None:
+        r, df_stk = st.session_state.analysis_cache_tw
+        render_stock_analysis(r, df_stk, is_us=False)
 
-        if res.get("live_info"):
-            asset_type_badge = "📊 ETF" if is_etf_asset else "🏢 個股"
-            status_badge = res['live_info'].get('status_label', '⚪ 歷史報價')
-            st.caption(f"⚡ **TWSE 撮合系統** ｜ {status_badge} ｜ {asset_type_badge} ｜ 時間：{res['live_info']['time']}")
+# ================= 模式 2：🇺🇸 美股診斷 (全維度即時連線) =================
+elif st.session_state.main_mode == "us_stock":
+    st.subheader("🇺🇸 美股全維度深度體檢 (全功能同規格)")
+    uq1, uq2 = st.columns(2)
+    with uq1:
+        if st.button("輝達 (NVDA)", use_container_width=True, key="uqp_nvda"):
+            st.session_state.selected_us_ticker = "NVDA"
+            st.session_state.analysis_cache_us = None
+            st.rerun()
+        if st.button("微軟 (MSFT)", use_container_width=True, key="uqp_msft"):
+            st.session_state.selected_us_ticker = "MSFT"
+            st.session_state.analysis_cache_us = None
+            st.rerun()
+    with uq2:
+        if st.button("蘋果 (AAPL)", use_container_width=True, key="uqp_aapl"):
+            st.session_state.selected_us_ticker = "AAPL"
+            st.session_state.analysis_cache_us = None
+            st.rerun()
+        if st.button("特斯拉 (TSLA)", use_container_width=True, key="uqp_tsla"):
+            st.session_state.selected_us_ticker = "TSLA"
+            st.session_state.analysis_cache_us = None
+            st.rerun()
 
-        c1, c2 = st.columns(2)
-        c1.metric("綜合決策總分", f"{res['total_score']} / 100")
-        c2.metric("最新成交價", f"{res['close']:.2f} 元")
+    col_u_in, col_u_btn = st.columns([2.4, 1.6])
+    with col_u_in:
+        us_ticker_in = st.text_input("輸入美股代碼", value=st.session_state.selected_us_ticker, label_visibility="collapsed", key="us_ticker_field")
+    with col_u_btn:
+        exec_us_btn = st.button("🚀 診斷美股", type="primary", use_container_width=True, key="run_us_btn")
 
-        c3, c4 = st.columns(2)
-        c3.metric("建議防守價 (停損)", f"{res['stop_loss']:.2f} 元")
-        risk_pct = (risk_unit / res['close']) * 100 if not is_below_stop else 0.0
-        c4.metric("最大預期風險", f"{risk_pct:.2f}%" if not is_below_stop else "已在防守線下")
-
-        # 模組 1：權威機構分析師共識 ＆ 精確下單指引
-        with st.expander("🎯 【權威分析師共識 ＆ 精確下單指引】", expanded=True):
-            if an_data["has_data"]:
-                st.markdown(f"**機構綜合投資評等：** `{an_data['rec_label']}`")
-                st.caption(f"📌 {an_data['rec_desc']}（共計 **{an_data['opinions']} 家** 券商機構追蹤）")
-
-                upside_pct = ((an_data['target_mean'] - res['close']) / res['close']) * 100 if res['close'] > 0 else 0
-                a_c1, a_c2 = st.columns(2)
-                a_c1.metric("機構共識平均目標價", f"{an_data['target_mean']:.2f} 元" if an_data['target_mean'] > 0 else "未揭露", f"{upside_pct:+.1f}% 潛在空間" if an_data['target_mean'] > 0 else "")
-                a_c2.metric("法人覆蓋機構數", f"{an_data['opinions']} 家")
-
-                if an_data['target_high'] > 0:
-                    st.caption(f"📊 法人區間分歧度：最低 **{an_data['target_low']:.2f} 元** ～ 最高 **{an_data['target_high']:.2f} 元**")
+    if exec_us_btn:
+        with st.spinner("連線美股即時行情與華爾街資料庫中..."):
+            df_stk_us = fetch_and_calc(us_ticker_in.strip().upper())
+            if df_stk_us is not None:
+                r_us = analyze_full_stock(us_ticker_in.strip().upper(), df_stk_us, df_spx, None, None, df_sox, global_forex, is_us=True)
+                st.session_state.analysis_cache_us = (r_us, df_stk_us)
             else:
-                st.info("💡 該標的暫無多數券商連續追蹤報告，目標價已依波段動態空間推算。")
+                st.session_state.analysis_cache_us = None
+                st.error("無法取得該美股行情，請確認代碼（如 NVDA, AAPL, TSM, AMD）。")
 
+    if st.session_state.analysis_cache_us is not None:
+        r_us, df_stk_us = st.session_state.analysis_cache_us
+        render_stock_analysis(r_us, df_stk_us, is_us=True)
+
+# ================= 模式 3：🇹🇼 台灣期貨 (獨立專區) =================
+elif st.session_state.main_mode == "tw_futures":
+    st.subheader("🇹🇼 台灣期貨獨立專區")
+    st.caption("即時台指期貨點位・實質基差 (Basis) 診斷・跨市場日期校驗")
+
+    if df_market is not None and df_futures is not None:
+        twii_close = df_market.iloc[-1]['Close']
+        fut_close = df_futures.iloc[-1]['Close']
+        date_twii = df_market.index[-1].date()
+        date_fut = df_futures.index[-1].date()
+        basis = fut_close - twii_close
+
+        fb1, fb2 = st.columns(2)
+        fb1.metric("台指期貨點位 (WTX)", f"{fut_close:.1f}")
+        fb2.metric("加權現貨點位 (^TWII)", f"{twii_close:.1f}")
+
+        fb3, fb4 = st.columns(2)
+        fb3.metric("即時基差 (期-現)", f"{basis:+.1f} 點")
+        basis_state = "🔥 實質正價差" if basis > 30 else ("⚠️ 避險逆價差" if basis < -60 else "⚪ 正常平價")
+        fb4.metric("價差多空結構", basis_state)
+
+        st.write("---")
+        if date_twii == date_fut:
+            if basis > 30:
+                st.success("🟢 **實質正價差格局**：期貨領先現貨，主力大額資金態度偏多，利於次日開盤延續多頭慣性！")
+            elif basis < -60:
+                st.warning("⚠️ **大幅逆價差格局**：市場避險情緒升溫，短線需提防拉回洗盤或外資空單壓抑！")
+            else:
+                st.info("⚪ **正常平價價差**：期現貨步調一致，由盤中量能與主流族群決定方向。")
+        else:
+            st.warning(f"⚠️ **期現貨日期不同步**：現貨最新日期為 `{date_twii}`，期貨為 `{date_fut}`（可能適逢期指夜盤時段），計算之基差僅供參考。")
+
+        st.write("---")
+        st.markdown("### 📈 台指期貨走勢與月線 (20MA)")
+        st.line_chart(df_futures[['Close', 'MA20']].dropna().tail(60))
+    else:
+        st.warning("⚠️ **期貨資料不可用**：台指期 (WTX=F) 連線中斷或非交易時段，系統嚴格拒絕使用現貨指數假冒。")
+
+# ================= 模式 4：📈 美股期貨 (獨立專區) =================
+elif st.session_state.main_mode == "us_futures":
+    st.subheader("📈 美股期貨獨立專區")
+    st.caption("四大美指期貨即時動能・微那斯達克 / 微標普 / 道瓊 / 羅素2000")
+
+    US_FUT_LIST = [
+        ("微那斯達克期 (NQ)", "NQ=F", "全球科技龍頭風向球"),
+        ("小標普500期 (ES)", "ES=F", "美股大盤流動性與宏觀資產"),
+        ("道瓊期貨 (YM)", "YM=F", "傳統價值龍頭與金融防禦"),
+        ("羅素2000期 (RTY)", "RTY=F", "中小型股景氣復甦動能")
+    ]
+
+    for name, code, desc in US_FUT_LIST:
+        df_g = fetch_and_calc(code)
+        if df_g is not None and len(df_g) >= 2:
+            last_p = df_g.iloc[-1]['Close']
+            prev_p = df_g.iloc[-2]['Close']
+            chg_pct = ((last_p - prev_p) / prev_p) * 100
+            ma5_g = df_g['MA5'].iloc[-1]
+            status = "🔥 站上 5MA 攻擊" if last_p > ma5_g else "❄️ 跌破 5MA 防守"
+
+            c_f1, c_f2 = st.columns([2, 1])
+            c_f1.markdown(f"**{name}** ｜ {desc}")
+            c_f2.metric("點位", f"{last_p:.2f}", f"{chg_pct:+.2f}%")
+            st.caption(f"結構位階：`{status}`")
             st.write("---")
-            st.markdown("### 📋 【精確下單執行卡】")
-            if is_below_stop:
-                st.error("🚫 **當前禁止下單**：現價已跌破建議防守線，空方控盤，嚴禁逆勢摸底！")
-            else:
-                st.markdown(f"""
-                1. **建議進場區間**：**`{res['close']:.2f} 元`**（早盤回測 5MA 不破可分批布局）。
-                2. **波段防守點位**：**`{res['stop_loss']:.2f} 元`**（收盤破線立即退場，絕不凹單）。
-                3. **第一獲利目標**：**`{target_1:.2f} 元`**（達成 1.5R 盈虧比，強制賣出 1/2 入袋並上移防守至成本）。
-                4. **波段獲利目標**：**`{res['target_60d']:.2f} 元`**（對齊機構共識目標價或波段高點擴展區）。
-                """)
 
-        # 模組 2：決策結論與多空架構
-        with st.expander("📝 【決策結論與多空架構】", expanded=False):
-            if is_below_stop:
-                st.error("### 🔴 現價已跌破建議防守線：嚴禁追價！")
-                st.write(f"- 當前價位（{res['close']:.2f} 元）低於防守點（{res['stop_loss']:.2f} 元）。")
-            elif res['total_score'] >= 75:
-                st.success("### 🟢 積極偏多：體質與量價動能同步翻多，適合進場")
-                st.write(f"- 建議防守價位：**{res['stop_loss']:.2f} 元**。")
-            elif 60 <= res['total_score'] < 75:
-                st.warning("### 🟡 穩健觀察：指標整理或分歧，僅限 1/3 以下微型試單")
-            else:
-                st.error("### 🔴 暫緩進場：評價過高或短期均線下壓，現金為王")
-
-        # 模組 3：開盤即時撮合動態
-        with st.expander("⚡ 【開盤即時撮合動態 (TWSE 官方)】", expanded=False):
-            st.markdown(f"**當前 K 棒型態：** `{res['k_type']}`")
-            k1, k2 = st.columns(2)
-            k1.metric("開盤跳空幅度", f"{res['gap_pct']:+.2f}%")
-            k2.metric("開盤至今漲跌", f"{res['intraday_pct']:+.2f}%")
-            st.write("---")
-            for d in res['opening_diag']:
-                st.write(f"• {d}")
-
-        # 模組 4：三均線矩陣
-        with st.expander("📏 【日 / 月 / 季線 位階矩陣】", expanded=False):
-            st.markdown(f"**均線排列結構：** `{res['ma_alignment']}`")
-            m1, m2, m3 = st.columns(3)
-            m1.metric("日線 (5MA)", f"{res['ma_status']['ma5_val']:.2f}", f"{res['ma_status']['ma5_diff']:+.1f}%")
-            m2.metric("月線 (20MA)", f"{res['ma_status']['ma20_val']:.2f}", f"{res['ma_status']['ma20_diff']:+.1f}%")
-            m3.metric("季線 (60MA)", f"{res['ma_status']['ma60_val']:.2f}", f"{res['ma_status']['ma60_diff']:+.1f}%")
-
-        # 模組 5：體質護城河
-        fund_title = "💎 【ETF 專屬體質與配息分析】" if is_etf_asset else "💎 【企業基本面體質護城河】"
-        with st.expander(fund_title, expanded=False):
-            f_data = res['fund_data']
-            if not f_data.get("has_data", False):
-                st.warning("⚠️ 該標的未揭露足夠之財報/配息數據，系統已將基本面評分排除，並自動重新權衡動能指標。")
-            elif is_etf_asset:
-                f1, f2 = st.columns(2)
-                f1.metric("預估年化殖利率", f"{f_data['yield']:.1f}%" if f_data['yield'] is not None else "未揭露")
-                f2.metric("Beta 波動係數", f"{f_data['beta']:.2f}" if f_data['beta'] is not None else "未揭露")
-                if f_data.get('nav') is not None:
-                    st.caption(f"淨值 (NAV): {f_data['nav']:.2f} 元")
-            else:
-                f1, f2 = st.columns(2)
-                f1.metric("ROE 股東權益報酬率", f"{f_data['roe']:.1f}%" if f_data['roe'] is not None else "無數據")
-                f2.metric("營業利益率", f"{f_data['op_margin']:.1f}%" if f_data['op_margin'] is not None else "無數據")
-                f3, f4 = st.columns(2)
-                f3.metric("本益比 (PE)", f"{f_data['pe']:.1f}x" if f_data['pe'] is not None else "無數據")
-                f4.metric("負債比率 (D/E)", f"{f_data['debt_ratio']:.1f}%" if f_data['debt_ratio'] is not None else "無數據")
-
-            st.write("---")
-            for r in f_data.get('reasons', []):
-                st.write(f"• {r}")
-
-        # 模組 6：階梯停利 SOP
-        with st.expander("🚪 【階梯式分階出場 SOP】", expanded=False):
-            st.markdown(f"""
-            - **初始防守停損**：跌破 **`{res['stop_loss']:.2f}` 元** 嚴格離場，絕不凹單。
-            - **第一階段目標（減碼 1/2）**：達 **`{target_1:.2f}` 元**（1.5R 盈虧比），賣出半數部位並上移防守至成本價（鎖定保本）。
-            - **第二階段目標（波段收割）**：達 **`{res['target_60d']:.2f}` 元** 分批落袋。
-            - **移動停利（Trailing Stop）**：其餘部位收盤跌破 5 日線全數獲利了結。
-            """)
-
-        # 模組 7：部位風控計算機
-        with st.expander("💰 【部位風控與建議張數計算機】", expanded=False):
-            col_cap, col_risk = st.columns(2)
-            with col_cap:
-                total_capital = st.number_input("總操作資金 (NTD)", value=1000000, step=100000, key="calc_cap_input")
-            with col_risk:
-                risk_tolerance = st.slider("單筆最大承受損失比率", min_value=0.5, max_value=3.0, value=1.0, step=0.1, key="calc_risk_slider")
-
-            max_risk_dollar = total_capital * (risk_tolerance / 100.0)
-            if is_below_stop:
-                st.error("⚠️ 警告：當前價格已在停損價位之下，建議買進張數：0 張！")
-                suggested_lots = 0
-                rr_ratio = 0.0
-            else:
-                loss_per_lot = risk_unit * 1000
-                risk_based_lots = int(max_risk_dollar // loss_per_lot) if loss_per_lot > 0 else 0
-                capital_max_lots = int(total_capital // (res['close'] * 1000)) if res['close'] > 0 else 0
-                suggested_lots = min(risk_based_lots, capital_max_lots)
-                potential_reward = max(res['target_60d'] - res['close'], 0)
-                rr_ratio = potential_reward / risk_unit if risk_unit > 0 else 0
-
-            b1, b2 = st.columns(2)
-            b1.metric("單筆最大容許虧損", f"{int(max_risk_dollar):,} 元")
-            b2.metric("建議最大進場張數", f"{suggested_lots} 張", help="同時受限於風險停損額與總現金購買力")
-            b3, b4 = st.columns(2)
-            b3.metric("目標獲利區", f"{res['target_60d']:.2f} 元")
-            b4.metric("預期盈虧比 (R/R)", f"{rr_ratio:.2f} : 1")
-
-        # 模組 8：無前視偏誤回測
-        with st.expander("📊 【過去 1 年策略回測數據 (無前視偏誤・單部位模型)】", expanded=False):
-            bt = backtest_strategy(df_stock)
-            if bt:
-                bt1, bt2 = st.columns(2)
-                bt1.metric("近 1 年訊號次數", f"{bt['count']} 次")
-                bt2.metric("持有 5 日勝率", f"{bt['win_rate']:.1f}%")
-                bt3, bt4 = st.columns(2)
-                bt3.metric("平均淨報酬率", f"{bt['avg_return']:+.2f}%", help="次日開盤進場，已扣除 0.45% 手續費與稅")
-                bt4.metric("真實最大回撤 (MDD)", f"{bt['mdd']:.2f}%", help="連續權益曲線之最大峰谷回撤")
-                st.caption(f"📌 單部位循序進出（持倉中不重複進場）、單次最差交易：`{bt['worst_loss']:.2f}%`")
-            else:
-                st.write("該標的歷史數據樣本不足以計算有效回測。")
-
-        # 模組 9：均線走勢圖
-        with st.expander("📈 【均線價格走勢圖】", expanded=False):
-            valid_cols = ['Close']
-            for c in ['MA5', 'MA20', 'MA60']:
-                if c in df_stock.columns and df_stock[c].notna().sum() > 5:
-                    valid_cols.append(c)
-            chart_data = df_stock[valid_cols].dropna().tail(60)
-            st.line_chart(chart_data)
-
-# ================= 模式 2：📊 ETF 專區 =================
+# ================= 模式 5：📊 ETF 專區 =================
 elif st.session_state.main_mode == "etf":
     st.subheader("📊 ETF 旗艦量化策略雷達")
-    st.caption("熱門 ETF 全方位即時體檢・配息防禦 × 均線動能 × 定期定額試算")
-
-    # 分類篩選按鈕 (改為 2x2 避免擠壓溢出)
     f_r1_c1, f_r1_c2 = st.columns(2)
     with f_r1_c1:
         if st.button("🔥 全部熱門", type="primary" if st.session_state.etf_category_filter == "全部" else "secondary", use_container_width=True, key="filter_etf_all"):
@@ -1258,7 +1402,7 @@ elif st.session_state.main_mode == "etf":
                 name, code, cat, desc = item
                 df_stk = fetch_and_calc(code)
                 if df_stk is not None:
-                    r = analyze_full_stock(code, df_stk, df_market, df_futures, df_tsm, df_sox, global_forex)
+                    r = analyze_full_stock(code, df_stk, df_market, df_futures, df_tsm, df_sox, global_forex, is_us=False)
                     return {
                         "名稱": name,
                         "代碼": code,
@@ -1327,85 +1471,7 @@ elif st.session_state.main_mode == "etf":
         else:
             st.info(f"🎯 維持標準扣款 **{int(etf_cap):,} 元**")
 
-# ================= 模式 3：⚡ 期貨與美台跨市場連動 =================
-elif st.session_state.main_mode == "futures":
-    st.subheader("⚡ 期貨與美台跨市場連動核心")
-
-    st.markdown("### 🏆 台積電 ADR (TSM) 即時換算")
-    df_tsm_now = fetch_and_calc("TSM")
-    df_2330_now = fetch_and_calc("2330.TW")
-
-    if df_tsm_now is not None and df_2330_now is not None:
-        tsm_p = df_tsm_now.iloc[-1]['Close']
-        tw_p = df_2330_now.iloc[-1]['Close']
-        usdtwd_curr = global_forex['twd_rate']
-        parity_twd, premium_pct = calculate_adr_parity(tsm_p, tw_p, usdtwd_curr)
-
-        c_a1, c_a2 = st.columns(2)
-        c_a1.metric("TSM ADR 最新價", f"{tsm_p:.2f} USD")
-        c_a2.metric("台積電現股", f"{tw_p:.2f} 元")
-
-        c_a3, c_a4 = st.columns(2)
-        c_a3.metric("ADR 理論折合價", f"{parity_twd:.2f} 元" if parity_twd > 0 else "匯率檢索中")
-        c_a4.metric("即時溢價率", f"{premium_pct:+.2f}%" if parity_twd > 0 else "--")
-
-        if premium_pct >= 10.0:
-            st.success(f"🔥 **ADR 大幅溢價 (+{premium_pct:.1f}%)**：次日台股高機率具備強勁推升動能！")
-        elif premium_pct <= -2.0:
-            st.warning(f"⚠️ **ADR 出現折價 ({premium_pct:.1f}%)**：提防現貨與 ADR 跨市場套利賣壓！")
-        else:
-            st.info(f"⚖️ **合理溢價區間 ({premium_pct:+.1f}%)**")
-    st.write("---")
-
-    st.markdown("### 📊 台指期 (WTX) 與現貨基差 (Basis)")
-    if df_market is not None and df_futures is not None:
-        twii_close = df_market.iloc[-1]['Close']
-        fut_close = df_futures.iloc[-1]['Close']
-        date_twii = df_market.index[-1].date()
-        date_fut = df_futures.index[-1].date()
-        basis = fut_close - twii_close
-
-        fb1, fb2, fb3 = st.columns(3)
-        fb1.metric("現貨指數", f"{twii_close:.1f}")
-        fb2.metric("台指期貨", f"{fut_close:.1f}")
-        fb3.metric("即時基差", f"{basis:+.1f} 點")
-
-        if date_twii == date_fut:
-            if basis > 30:
-                st.success("🟢 **實質正價差格局**：主力大額資金態度偏多樂觀！")
-            elif basis < -60:
-                st.warning("⚠️ **大幅逆價差格局**：避險情緒升溫，短線提防拉回洗盤！")
-            else:
-                st.info("⚪ **正常平價價差**")
-        else:
-            st.warning(f"⚠️ **期現貨日期不同步**：現貨最新日期為 `{date_twii}`，期貨為 `{date_fut}`（可能適逢期指夜盤或結算日），計算之基差僅供參考。")
-    else:
-        st.warning("⚠️ **期貨資料不可用**：台指期 (WTX=F) 連線中斷或非交易時段，系統嚴格拒絕使用現貨指數假冒。")
-
-    st.write("---")
-
-    st.markdown("### 🌐 全球美股期貨與關鍵大宗商品")
-    GLOBAL_FUT_LIST = [
-        ("微那斯達克期 (NQ)", "NQ=F", "美股科技領先指標"),
-        ("小標普期 (ES)", "ES=F", "美股大盤流動性"),
-        ("紐約黃金期 (GC)", "GC=F", "地緣政治避險指標"),
-        ("輕原油期 (CL)", "CL=F", "通膨與能源供應")
-    ]
-    for name, code, desc in GLOBAL_FUT_LIST:
-        df_g = fetch_and_calc(code)
-        if df_g is not None and len(df_g) >= 2:
-            last_p = df_g.iloc[-1]['Close']
-            prev_p = df_g.iloc[-2]['Close']
-            chg_pct = ((last_p - prev_p) / prev_p) * 100
-            ma5_g = df_g['MA5'].iloc[-1]
-            status = "🔥 站上 5MA" if last_p > ma5_g else "❄️ 破 5MA"
-            gc1, gc2 = st.columns([2, 1])
-            gc1.markdown(f"**{name}** ｜ {desc}")
-            gc2.metric("點位", f"{last_p:.2f}", f"{chg_pct:+.2f}%")
-            st.caption(f"結構：`{status}`")
-            st.write("---")
-
-# ================= 模式 4：💎 體質績優雷達 =================
+# ================= 模式 6：💎 體質雷達 =================
 elif st.session_state.main_mode == "market":
     st.subheader("💎 市場穩健優質標的・即時連線掃描")
 
@@ -1420,7 +1486,7 @@ elif st.session_state.main_mode == "market":
                 name, code, desc = item
                 df_stk = fetch_and_calc(code)
                 if df_stk is not None:
-                    r = analyze_full_stock(code, df_stk, df_market, df_futures, df_tsm, df_sox, global_forex)
+                    r = analyze_full_stock(code, df_stk, df_market, df_futures, df_tsm, df_sox, global_forex, is_us=False)
                     return {
                         "名稱": name,
                         "代碼": code,
@@ -1477,7 +1543,7 @@ elif st.session_state.main_mode == "market":
                 for err in failed_stocks:
                     st.write(f"• {err}")
 
-# ================= 模式 5：📢 法說會日程與重大訊息 =================
+# ================= 模式 7：📢 法說會日程與重大訊息 =================
 elif st.session_state.main_mode == "events":
     st.subheader("📢 重要法說會日程 ＆ 即時重大訊息速查")
 
@@ -1509,7 +1575,7 @@ elif st.session_state.main_mode == "events":
             st.caption(f"🎯 核心看點：{call['重點觀測']}")
             st.write("---")
 
-# ================= 模式 6：💱 全球外匯大盤 =================
+# ================= 模式 8：💱 全球外匯大盤 =================
 elif st.session_state.main_mode == "forex":
     st.subheader("💱 全球外匯與熱錢資金即時儀表板")
     st.caption("直連臺灣銀行官方牌告與全球匯率主機")
