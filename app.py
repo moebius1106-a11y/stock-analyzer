@@ -4,6 +4,8 @@ import pandas as pd
 import numpy as np
 import requests
 import math
+import json
+import os
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
@@ -125,6 +127,59 @@ if not st.session_state.authenticated:
         else:
             st.error("密碼錯誤，請重新輸入。")
     st.stop()
+
+# ----------------- 常用股票與歷史持久化記憶模組 -----------------
+HISTORY_FILE = "user_history.json"
+
+def get_user_data():
+    default_data = {
+        "tw_favorites": ["2330.TW", "2317.TW", "2454.TW", "0050.TW"],
+        "tw_recent": ["2330.TW", "2454.TW", "2317.TW"],
+        "us_favorites": ["NVDA", "AAPL", "MSFT", "TSLA"],
+        "us_recent": ["NVDA", "AAPL"]
+    }
+    if "user_data" not in st.session_state:
+        if os.path.exists(HISTORY_FILE):
+            try:
+                with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    for k, v in default_data.items():
+                        if k not in data or not isinstance(data[k], list):
+                            data[k] = v
+                    st.session_state.user_data = data
+            except Exception:
+                st.session_state.user_data = default_data
+        else:
+            st.session_state.user_data = default_data
+    return st.session_state.user_data
+
+def save_user_data():
+    if "user_data" in st.session_state:
+        try:
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(st.session_state.user_data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+def add_recent_history(market: str, ticker: str):
+    data = get_user_data()
+    key = f"{market}_recent"
+    ticker = ticker.strip().upper()
+    if ticker in data[key]:
+        data[key].remove(ticker)
+    data[key].insert(0, ticker)
+    data[key] = data[key][:6]
+    save_user_data()
+
+def toggle_favorite_stock(market: str, ticker: str):
+    data = get_user_data()
+    key = f"{market}_favorites"
+    ticker = ticker.strip().upper()
+    if ticker in data[key]:
+        data[key].remove(ticker)
+    else:
+        data[key].append(ticker)
+    save_user_data()
 
 # ----------------- 數值安全轉換工具 -----------------
 def safe_float(val, default=0.0):
@@ -780,7 +835,7 @@ def analyze_forex_data():
 
     return res
 
-# ----------------- 全維度綜合量化評估 (台股/美股/期貨自適應) -----------------
+# ----------------- 全維度綜合量化評估 -----------------
 def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, forex_info, asset_type="tw"):
     live_twse = fetch_twse_realtime(ticker) if asset_type == "tw" else None
     ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag = analyze_opening_and_ma(df_stock, live_twse)
@@ -1033,6 +1088,12 @@ if "selected_us_ticker" not in st.session_state:
 if "selected_fut_contract" not in st.session_state:
     st.session_state.selected_fut_contract = "WTX"
 
+if "auto_run_tw" not in st.session_state:
+    st.session_state.auto_run_tw = False
+
+if "auto_run_us" not in st.session_state:
+    st.session_state.auto_run_us = False
+
 if "analysis_cache_tw" not in st.session_state:
     st.session_state.analysis_cache_tw = None
 
@@ -1045,12 +1106,19 @@ if "analysis_cache_fut" not in st.session_state:
 if "etf_category_filter" not in st.session_state:
     st.session_state.etf_category_filter = "全部"
 
+# 載入持久化記憶資料
+user_memory = get_user_data()
+
 # ----------------- 頂部導航與功能說明書 -----------------
 st.title("📱 股期決策旗艦站 (跨市場機構版)")
 
 with st.expander("📘 點此查看【系統現行版本完整功能清單與架構指南】", expanded=False):
     st.markdown("""
-    本系統現已全面實現**台股、美股、台期、美期獨立分工監控**：
+    本系統現已全面實現**台股、美股、台期、美期獨立分工監控**，並搭載持久記憶功能：
+    
+    ### ⭐【常用股票記憶與快速查詢系統】
+    - **自訂常用清單**：任何個股或 ETF 診斷後，可一鍵加入常用清單，跨頁面/跨重整 (F5) 依然永久保存。
+    - **最近查詢紀錄**：自動追蹤最近 6 檔查詢標的，點擊按鈕直接一秒自動診斷，省去重複輸入麻煩。
     
     ### 💡【全市場查詢代碼輸入格式教學】
     - **台股上市股票**：請輸入 `代碼.TW`（例如：`2330.TW`、`2603.TW`），**亦支援直接輸入 4 位數純代號**（如輸入 `2330`，系統將自動為您補正為 `2330.TW`）。
@@ -1121,7 +1189,7 @@ df_spx = fetch_and_calc("^GSPC")
 global_forex = analyze_forex_data()
 
 # ================= 模組共用渲染器 =================
-def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallback_warning=None):
+def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallback_warning=None, ticker_raw=None):
     is_below_stop = res['close'] <= res['stop_loss']
     risk_unit = max(res['close'] - res['stop_loss'], 0.0)
     target_1 = res['close'] + (1.5 * max(risk_unit, res['close'] * 0.01 if mode_type == "futures" else res['close'] * 0.03))
@@ -1148,6 +1216,16 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         st.caption(f"⚡ **期貨專屬規格載入** ｜ 單位：指數點 ｜ {spec['name']} 保證金參數就位")
     elif mode_type == "us":
         st.caption(f"⚡ **美股即時行情連線** ｜ 幣別：USD ｜ 資料更新時序完整")
+
+    # 常用標的即時收藏/取消收藏按鈕 (台股與美股專用)
+    if mode_type in ("tw", "us") and ticker_raw:
+        m_key = "tw" if mode_type == "tw" else "us"
+        cur_favs = user_memory.get(f"{m_key}_favorites", [])
+        is_fav = ticker_raw in cur_favs
+        fav_label = "⭐ 已加入常用清單 (點此移出)" if is_fav else "☆ 收藏至常用股票清單"
+        if st.button(fav_label, use_container_width=True, key=f"btn_fav_toggle_{ticker_raw}"):
+            toggle_favorite_stock(m_key, ticker_raw)
+            st.rerun()
 
     c1, c2 = st.columns(2)
     c1.metric("綜合決策總分", f"{res['total_score']} / 100")
@@ -1343,30 +1421,38 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         chart_data = df_asset[valid_cols].dropna().tail(60)
         st.line_chart(chart_data)
 
-# ================= 模式 1：🔍 台股診斷 (含代碼教學與自動防呆) =================
+# ================= 模式 1：🔍 台股診斷 (含常用記憶與代碼指引) =================
 if st.session_state.main_mode == "tw_stock":
     st.subheader("🔍 台股全維度深度體檢")
-    qh1, qh2 = st.columns(2)
-    with qh1:
-        if st.button("台積電 (2330)", use_container_width=True, key="qp_2330"):
-            st.session_state.selected_tw_ticker = "2330.TW"
+
+    # 1. ⭐ 常用自選股快捷按鈕 (2 欄大按鈕)
+    tw_favs = user_memory.get("tw_favorites", ["2330.TW", "2317.TW", "2454.TW", "0050.TW"])
+    st.caption("⭐ **我的常用股票清單**（點選一秒自動診斷）：")
+
+    # 渲染常用股票按鈕
+    fav_cols = st.columns(2)
+    for idx, fav_code in enumerate(tw_favs[:6]):
+        col_target = fav_cols[idx % 2]
+        display_name = fav_code.replace(".TW", "").replace(".TWO", "")
+        if col_target.button(f"⭐ {fav_code}", use_container_width=True, key=f"tw_fav_{fav_code}"):
+            st.session_state.selected_tw_ticker = fav_code
             st.session_state.analysis_cache_tw = None
-            st.rerun()
-        if st.button("鴻海 (2317)", use_container_width=True, key="qp_2317"):
-            st.session_state.selected_tw_ticker = "2317.TW"
-            st.session_state.analysis_cache_tw = None
-            st.rerun()
-    with qh2:
-        if st.button("聯發科 (2454)", use_container_width=True, key="qp_2454"):
-            st.session_state.selected_tw_ticker = "2454.TW"
-            st.session_state.analysis_cache_tw = None
-            st.rerun()
-        if st.button("元大台灣50 (0050)", use_container_width=True, key="qp_0050"):
-            st.session_state.selected_tw_ticker = "0050.TW"
-            st.session_state.analysis_cache_tw = None
+            st.session_state.auto_run_tw = True
             st.rerun()
 
-    # 代碼教學提示區
+    # 2. 🕒 最近查詢紀錄 (若有則顯示)
+    tw_recents = [r for r in user_memory.get("tw_recent", []) if r not in tw_favs][:4]
+    if tw_recents:
+        st.caption("🕒 **最近查詢紀錄**：")
+        rec_cols = st.columns(len(tw_recents))
+        for r_idx, r_code in enumerate(tw_recents):
+            if rec_cols[r_idx].button(f"{r_code}", use_container_width=True, key=f"tw_rec_{r_code}"):
+                st.session_state.selected_tw_ticker = r_code
+                st.session_state.analysis_cache_tw = None
+                st.session_state.auto_run_tw = True
+                st.rerun()
+
+    # 3. 代碼教學提示區
     st.caption("💡 **台股輸入格式指引**：上市請輸入 `代碼.TW`（如 `2330.TW`，亦支援純數字如 `2330` 自動轉上市）｜ 上櫃請輸入 `代碼.TWO`（如 `6488.TWO`）")
 
     col_input, col_btn = st.columns([2.4, 1.6])
@@ -1381,49 +1467,78 @@ if st.session_state.main_mode == "tw_stock":
     with col_btn:
         exec_clicked = st.button("🚀 診斷台股", type="primary", use_container_width=True, key="run_tw_btn")
 
+    # 常用清單管理抽屜
+    with st.expander("⚙️ 管理我的台股常用清單", expanded=False):
+        col_m1, col_m2 = st.columns([2.4, 1.6])
+        new_fav_in = col_m1.text_input("新增常用代碼", placeholder="例：2603.TW", key="new_tw_fav_in")
+        if col_m2.button("➕ 新增至常用", use_container_width=True, key="btn_add_tw_fav"):
+            clean_new_fav = new_fav_in.strip().upper()
+            if clean_new_fav.isdigit():
+                clean_new_fav += ".TW"
+            if clean_new_fav and clean_new_fav not in user_memory["tw_favorites"]:
+                user_memory["tw_favorites"].append(clean_new_fav)
+                save_user_data()
+                st.success(f"已加入 {clean_new_fav}！")
+                st.rerun()
+
+        st.caption("點擊下方紅色按鈕可從常用清單中移出：")
+        del_cols = st.columns(2)
+        for d_idx, d_code in enumerate(user_memory["tw_favorites"]):
+            if del_cols[d_idx % 2].button(f"❌ 移出 {d_code}", key=f"del_tw_fav_{d_code}", use_container_width=True):
+                user_memory["tw_favorites"].remove(d_code)
+                save_user_data()
+                st.rerun()
+
     # 防呆邏輯：純數字自動補上 .TW
     cleaned_tw_ticker = raw_tw_input.strip().upper()
     if cleaned_tw_ticker.isdigit():
         cleaned_tw_ticker = f"{cleaned_tw_ticker}.TW"
 
-    if exec_clicked:
+    if exec_clicked or st.session_state.auto_run_tw:
+        st.session_state.auto_run_tw = False
         with st.spinner("連線 TWSE 撮合主機計算中..."):
             df_stk = fetch_and_calc(cleaned_tw_ticker)
             if df_stk is not None:
                 r = analyze_full_stock(cleaned_tw_ticker, df_stk, df_market, df_futures_bench, df_tsm, df_sox, global_forex, asset_type="tw")
-                st.session_state.analysis_cache_tw = (r, df_stk)
+                st.session_state.analysis_cache_tw = (r, df_stk, cleaned_tw_ticker)
+                add_recent_history("tw", cleaned_tw_ticker)
             else:
                 st.session_state.analysis_cache_tw = None
                 st.error("無法取得該標的行情數據。請檢查是否為上櫃股票並補上 `.TWO`（例如 `6488.TWO`）。")
 
     if st.session_state.analysis_cache_tw is not None:
-        r, df_stk = st.session_state.analysis_cache_tw
-        render_analysis_view(r, df_stk, mode_type="tw")
+        r, df_stk, cur_t = st.session_state.analysis_cache_tw
+        render_analysis_view(r, df_stk, mode_type="tw", ticker_raw=cur_t)
 
-# ================= 模式 2：🇺🇸 美股診斷 (含代碼教學與自動防呆) =================
+# ================= 模式 2：🇺🇸 美股診斷 (含常用記憶與代碼指引) =================
 elif st.session_state.main_mode == "us_stock":
     st.subheader("🇺🇸 美股全維度深度體檢 (全功能同規格)")
-    uq1, uq2 = st.columns(2)
-    with uq1:
-        if st.button("輝達 (NVDA)", use_container_width=True, key="uqp_nvda"):
-            st.session_state.selected_us_ticker = "NVDA"
+
+    # 1. ⭐ 美股常用清單
+    us_favs = user_memory.get("us_favorites", ["NVDA", "AAPL", "MSFT", "TSLA"])
+    st.caption("⭐ **我的常用美股清單**（點選一秒自動診斷）：")
+
+    fav_u_cols = st.columns(2)
+    for idx, fav_u_code in enumerate(us_favs[:6]):
+        col_u_target = fav_u_cols[idx % 2]
+        if col_u_target.button(f"⭐ {fav_u_code}", use_container_width=True, key=f"us_fav_{fav_u_code}"):
+            st.session_state.selected_us_ticker = fav_u_code
             st.session_state.analysis_cache_us = None
-            st.rerun()
-        if st.button("微軟 (MSFT)", use_container_width=True, key="uqp_msft"):
-            st.session_state.selected_us_ticker = "MSFT"
-            st.session_state.analysis_cache_us = None
-            st.rerun()
-    with uq2:
-        if st.button("蘋果 (AAPL)", use_container_width=True, key="uqp_aapl"):
-            st.session_state.selected_us_ticker = "AAPL"
-            st.session_state.analysis_cache_us = None
-            st.rerun()
-        if st.button("特斯拉 (TSLA)", use_container_width=True, key="uqp_tsla"):
-            st.session_state.selected_us_ticker = "TSLA"
-            st.session_state.analysis_cache_us = None
+            st.session_state.auto_run_us = True
             st.rerun()
 
-    # 美股教學提示區
+    # 2. 🕒 美股最近查詢紀錄
+    us_recents = [r for r in user_memory.get("us_recent", []) if r not in us_favs][:4]
+    if us_recents:
+        st.caption("🕒 **最近查詢紀錄**：")
+        rec_u_cols = st.columns(len(us_recents))
+        for ru_idx, ru_code in enumerate(us_recents):
+            if rec_u_cols[ru_idx].button(f"{ru_code}", use_container_width=True, key=f"us_rec_{ru_code}"):
+                st.session_state.selected_us_ticker = ru_code
+                st.session_state.analysis_cache_us = None
+                st.session_state.auto_run_us = True
+                st.rerun()
+
     st.caption("💡 **美股輸入格式指引**：請輸入美股英文代號（如 `NVDA`、`AAPL`、`TSLA`、`MSFT`、`TSM`），大小寫皆可自動識別轉換。")
 
     col_u_in, col_u_btn = st.columns([2.4, 1.6])
@@ -1440,19 +1555,40 @@ elif st.session_state.main_mode == "us_stock":
 
     cleaned_us_ticker = raw_us_input.strip().upper()
 
-    if exec_us_btn:
+    # 管理美股常用抽屜
+    with st.expander("⚙️ 管理我的美股常用清單", expanded=False):
+        col_mu1, col_mu2 = st.columns([2.4, 1.6])
+        new_u_fav_in = col_mu1.text_input("新增美股代碼", placeholder="例：AMD", key="new_us_fav_in")
+        if col_mu2.button("➕ 新增至常用", use_container_width=True, key="btn_add_us_fav"):
+            clean_u_new = new_u_fav_in.strip().upper()
+            if clean_u_new and clean_u_new not in user_memory["us_favorites"]:
+                user_memory["us_favorites"].append(clean_u_new)
+                save_user_data()
+                st.success(f"已加入 {clean_u_new}！")
+                st.rerun()
+
+        del_u_cols = st.columns(2)
+        for du_idx, du_code in enumerate(user_memory["us_favorites"]):
+            if del_u_cols[du_idx % 2].button(f"❌ 移出 {du_code}", key=f"del_us_fav_{du_code}", use_container_width=True):
+                user_memory["us_favorites"].remove(du_code)
+                save_user_data()
+                st.rerun()
+
+    if exec_us_btn or st.session_state.auto_run_us:
+        st.session_state.auto_run_us = False
         with st.spinner("連線美股即時行情與華爾街資料庫中..."):
             df_stk_us = fetch_and_calc(cleaned_us_ticker)
             if df_stk_us is not None:
                 r_us = analyze_full_stock(cleaned_us_ticker, df_stk_us, df_spx, None, None, df_sox, global_forex, asset_type="us")
-                st.session_state.analysis_cache_us = (r_us, df_stk_us)
+                st.session_state.analysis_cache_us = (r_us, df_stk_us, cleaned_us_ticker)
+                add_recent_history("us", cleaned_us_ticker)
             else:
                 st.session_state.analysis_cache_us = None
                 st.error("無法取得該美股行情，請確認英文代碼（如 NVDA, AAPL, TSM, AMD）。")
 
     if st.session_state.analysis_cache_us is not None:
-        r_us, df_stk_us = st.session_state.analysis_cache_us
-        render_analysis_view(r_us, df_stk_us, mode_type="us")
+        r_us, df_stk_us, cur_ut = st.session_state.analysis_cache_us
+        render_analysis_view(r_us, df_stk_us, mode_type="us", ticker_raw=cur_ut)
 
 # ================= 模式 3：🇹🇼 台灣期貨 (智慧路由版) =================
 elif st.session_state.main_mode == "tw_futures":
@@ -1480,10 +1616,8 @@ elif st.session_state.main_mode == "tw_futures":
             st.session_state.analysis_cache_fut = None
             st.rerun()
 
-    # 期貨教學提示區
     st.caption("💡 **期貨輸入格式指引**：可點選上方按鈕或輸入契約簡稱（`WTX` 大台、`MTX` 小台、`WMT` 微台、`TE` 電子期、`TF` 金融期）。")
 
-    # 2. 智慧輸入框
     col_f_in, col_f_btn = st.columns([2.4, 1.6])
     with col_f_in:
         raw_fut_input = st.text_input(
@@ -1515,7 +1649,6 @@ elif st.session_state.main_mode == "tw_futures":
     else:
         st.caption("⚪ 基差提示：外部資料庫目前未提供獨立 TAIFEX 撮合報價，已嚴格停用假基差計算。")
 
-    # 4. 智慧路由運算
     clean_key = raw_fut_input.strip().upper().replace("=F", "")
     spec_info = TW_FUTURES_SPECS.get(clean_key, TW_FUTURES_SPECS["WTX"])
 
@@ -1535,7 +1668,6 @@ elif st.session_state.main_mode == "tw_futures":
                 st.session_state.analysis_cache_fut = None
                 st.error("暫時無法取得台股指數基準行情，請稍後再試。")
 
-    # 5. 全維度同規格渲染
     if st.session_state.analysis_cache_fut is not None:
         r_fut, df_fut_obj, spec_obj, fb_msg = st.session_state.analysis_cache_fut
         render_analysis_view(r_fut, df_fut_obj, mode_type="futures", custom_spec=spec_obj, fallback_warning=fb_msg)
