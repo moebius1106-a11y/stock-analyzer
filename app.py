@@ -636,7 +636,7 @@ def fetch_fundamentals(ticker: str):
             "reasons": ["⚠️ 基本面連線逾時，未計入基本面評分"]
         }
 
-# ----------------- 開盤即時與均線分析 (全域獨立函式) -----------------
+# ----------------- 開盤即時與均線分析 -----------------
 def analyze_opening_and_ma(df_stock, live_info=None):
     if df_stock is None or len(df_stock) == 0:
         return {}, "資料不足", 0, 0.0, 0.0, "⚪ 無資料", ["資料不足"]
@@ -835,7 +835,7 @@ def analyze_forex_data():
 
     return res
 
-# ----------------- 全維度綜合量化評估 -----------------
+# ----------------- 全維度綜合量化評估 (徹底解決防守價大於現價之矛盾) -----------------
 def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, forex_info, asset_type="tw"):
     live_twse = fetch_twse_realtime(ticker) if asset_type == "tw" else None
     ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag = analyze_opening_and_ma(df_stock, live_twse)
@@ -931,11 +931,19 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
 
     total_score = min(max(total_score, 0), 100)
 
+    # 【防守停損與多空准入修復核心】
     ma20_val = safe_float(last_stk['MA20'], close * 0.96)
-    if (close - ma20_val) < (0.5 * atr_val):
-        stop_loss = max(close - 2.0 * atr_val, ma20_val - 0.5 * atr_val)
+    
+    # 嚴格區分「多方守位」與「空方破線」
+    if close >= ma20_val:
+        # 多方架構：防守價以 (月線 - 0.5*ATR) 與 (現價 - 2*ATR) 取較高者，但上限絕不超過現價 98.5%
+        raw_stop = max(close - 2.0 * atr_val, ma20_val - 0.5 * atr_val)
+        stop_loss = min(raw_stop, close * 0.985)
+        is_breakdown = False
     else:
-        stop_loss = max(close - 2.0 * atr_val, ma20_val)
+        # 空方破線：現價已在月線下方，月線已轉為上檔壓力，做多停損強制錨定於現價下方之 ATR 緩衝區
+        stop_loss = min(close - 2.0 * atr_val, close * 0.985)
+        is_breakdown = True
 
     recent_60d_high = safe_float(df_stock['High'].tail(60).max(), close * 1.08)
     if analyst_data['target_mean'] > close:
@@ -951,6 +959,7 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
         "close": close,
         "stop_loss": stop_loss,
         "target_60d": target_60d,
+        "is_breakdown": is_breakdown,
         "ma_status": ma_status,
         "ma_alignment": ma_alignment,
         "gap_pct": gap_pct,
@@ -1188,11 +1197,11 @@ df_sox = fetch_and_calc("^SOX")
 df_spx = fetch_and_calc("^GSPC")
 global_forex = analyze_forex_data()
 
-# ================= 模組共用渲染器 =================
+# ================= 模組共用渲染器 (防守價與空方准入邏輯全面修復) =================
 def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallback_warning=None, ticker_raw=None):
-    is_below_stop = res['close'] <= res['stop_loss']
-    risk_unit = max(res['close'] - res['stop_loss'], 0.0)
-    target_1 = res['close'] + (1.5 * max(risk_unit, res['close'] * 0.01 if mode_type == "futures" else res['close'] * 0.03))
+    is_downtrend = res.get('is_breakdown', False) or (res['close'] < res['ma_status']['ma20_val'])
+    risk_unit = max(res['close'] - res['stop_loss'], res['close'] * 0.015)
+    target_1 = res['close'] + (1.5 * risk_unit)
     an_data = res['analyst_data']
 
     if mode_type == "futures":
@@ -1217,7 +1226,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
     elif mode_type == "us":
         st.caption(f"⚡ **美股即時行情連線** ｜ 幣別：USD ｜ 資料更新時序完整")
 
-    # 常用標的即時收藏/取消收藏按鈕 (台股與美股專用)
+    # 常用標的即時收藏/取消收藏按鈕
     if mode_type in ("tw", "us") and ticker_raw:
         m_key = "tw" if mode_type == "tw" else "us"
         cur_favs = user_memory.get(f"{m_key}_favorites", [])
@@ -1233,8 +1242,8 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
 
     c3, c4 = st.columns(2)
     c3.metric("建議防守價 (停損)", f"{res['stop_loss']:.2f} {currency_sym}")
-    risk_pct = (risk_unit / res['close']) * 100 if not is_below_stop else 0.0
-    c4.metric("最大預期風險", f"{risk_pct:.2f}%" if not is_below_stop else "已在防守線下")
+    risk_pct = (risk_unit / res['close']) * 100
+    c4.metric("最大預期風險", f"{risk_pct:.2f}%")
 
     # 1. 權威分析師/期顧共識 ＆ 精確下單指引
     guide_title = "🎯 【權威期顧分析師共識 ＆ 精確期貨下單卡】" if mode_type == "futures" else "🎯 【權威分析師共識 ＆ 精確下單指引】"
@@ -1258,8 +1267,8 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
 
         st.write("---")
         st.markdown(f"### 📋 【精確{unit_name}下單執行卡】")
-        if is_below_stop:
-            st.error("🚫 **當前禁止下單**：現價位已跌破建議防守線，空方控盤，嚴禁逆勢摸底！")
+        if is_downtrend:
+            st.error(f"🚫 **當前禁止做多**：現價（{res['close']:.2f} {currency_sym}）已跌破月線生命線（{res['ma_status']['ma20_val']:.2f} {currency_sym}），空方控盤，順勢交易者嚴禁逆勢摸底！若持有部位，波段停損價設為 `{res['stop_loss']:.2f} {currency_sym}`。")
         else:
             st.markdown(f"""
             1. **建議進場區間**：**`{res['close']:.2f} {currency_sym}`**（回測 5MA 不破分批布局）。
@@ -1270,8 +1279,9 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
 
     # 2. 決策結論與多空架構
     with st.expander("📝 【決策結論與多空架構】", expanded=False):
-        if is_below_stop:
-            st.error(f"### 🔴 現價已跌破建議防守線（{res['stop_loss']:.2f} {currency_sym}）：嚴禁追價！")
+        if is_downtrend:
+            st.error(f"### 🔴 空方架構：現價（{res['close']:.2f} {currency_sym}）跌破月線生命線（{res['ma_status']['ma20_val']:.2f} {currency_sym}），嚴禁追價摸底！")
+            st.write(f"- 當前價位位於月線（20MA）之下，短中期均線蓋頭下壓，等待止跌築底翻揚再行介入。建議防守價位：**{res['stop_loss']:.2f} {currency_sym}**。")
         elif res['total_score'] >= 75:
             st.success(f"### 🟢 積極偏多：技術量價動能同步翻多，適合進場 (防守: {res['stop_loss']:.2f} {currency_sym})")
         elif 60 <= res['total_score'] < 75:
@@ -1361,36 +1371,34 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
 
         max_risk_dollar = total_capital * (risk_tolerance / 100.0)
 
-        if is_below_stop:
-            st.error(f"⚠️ 警告：當前價格已在停損價位之下，建議進場：0 {unit_name}！")
-            suggested_pos = 0
-            rr_ratio = 0.0
+        if mode_type == "futures":
+            loss_per_unit = risk_unit * spec['tick_value']
+            risk_based_pos = int(max_risk_dollar // loss_per_unit) if loss_per_unit > 0 else 0
+            margin_max_pos = int(total_capital // spec['initial_margin']) if spec['initial_margin'] > 0 else 0
+            suggested_pos = min(risk_based_pos, margin_max_pos)
+        elif mode_type == "us":
+            loss_per_unit = risk_unit * 1.0
+            risk_based_pos = int(max_risk_dollar // loss_per_unit) if loss_per_unit > 0 else 0
+            capital_max_pos = int(total_capital // res['close']) if res['close'] > 0 else 0
+            suggested_pos = min(risk_based_pos, capital_max_pos)
         else:
-            if mode_type == "futures":
-                loss_per_unit = risk_unit * spec['tick_value']
-                risk_based_pos = int(max_risk_dollar // loss_per_unit) if loss_per_unit > 0 else 0
-                margin_max_pos = int(total_capital // spec['initial_margin']) if spec['initial_margin'] > 0 else 0
-                suggested_pos = min(risk_based_pos, margin_max_pos)
-            elif mode_type == "us":
-                loss_per_unit = risk_unit * 1.0
-                risk_based_pos = int(max_risk_dollar // loss_per_unit) if loss_per_unit > 0 else 0
-                capital_max_pos = int(total_capital // res['close']) if res['close'] > 0 else 0
-                suggested_pos = min(risk_based_pos, capital_max_pos)
-            else:
-                loss_per_unit = risk_unit * 1000.0
-                risk_based_pos = int(max_risk_dollar // loss_per_unit) if loss_per_unit > 0 else 0
-                capital_max_lots = int(total_capital // (res['close'] * 1000.0)) if res['close'] > 0 else 0
-                suggested_pos = min(risk_based_pos, capital_max_lots)
+            loss_per_unit = risk_unit * 1000.0
+            risk_based_pos = int(max_risk_dollar // loss_per_unit) if loss_per_unit > 0 else 0
+            capital_max_lots = int(total_capital // (res['close'] * 1000.0)) if res['close'] > 0 else 0
+            suggested_pos = min(risk_based_pos, capital_max_lots)
 
-            potential_reward = max(res['target_60d'] - res['close'], 0)
-            rr_ratio = potential_reward / risk_unit if risk_unit > 0 else 0
+        potential_reward = max(res['target_60d'] - res['close'], 0)
+        rr_ratio = potential_reward / risk_unit if risk_unit > 0 else 0
 
-        b1, b2 = st.columns(2)
-        b1.metric("單筆最大容許虧損", f"{int(max_risk_dollar):,} 元" if mode_type != "us" else f"{int(max_risk_dollar):,} USD")
-        b2.metric("建議最大進場數量", f"{suggested_pos} {unit_name}", help="同時受限於風險停損額與保證金/現金購買力")
-        b3, b4 = st.columns(2)
-        b3.metric("目標獲利區", f"{res['target_60d']:.1f} {currency_sym}")
-        b4.metric("預期盈虧比 (R/R)", f"{rr_ratio:.2f} : 1")
+        if is_downtrend:
+            st.warning(f"⚠️ **空方弱勢警示**：目前處於跌破月線格局，系統建議進場數量為 **0 {unit_name}**（觀望為宜）。若依個人風控上限計算，最多承受口數為 **{suggested_pos} {unit_name}**。")
+        else:
+            b1, b2 = st.columns(2)
+            b1.metric("單筆最大容許虧損", f"{int(max_risk_dollar):,} 元" if mode_type != "us" else f"{int(max_risk_dollar):,} USD")
+            b2.metric("建議最大進場數量", f"{suggested_pos} {unit_name}", help="同時受限於風險停損額與保證金/現金購買力")
+            b3, b4 = st.columns(2)
+            b3.metric("目標獲利區", f"{res['target_60d']:.1f} {currency_sym}")
+            b4.metric("預期盈虧比 (R/R)", f"{rr_ratio:.2f} : 1")
 
     # 8. 無前視偏誤回測
     with st.expander(f"📊 【過去 1 年{unit_name}策略回測數據 (無前視偏誤)】", expanded=False):
@@ -1421,15 +1429,13 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         chart_data = df_asset[valid_cols].dropna().tail(60)
         st.line_chart(chart_data)
 
-# ================= 模式 1：🔍 台股診斷 (含常用記憶與代碼指引) =================
+# ================= 模式 1：🔍 台股診斷 =================
 if st.session_state.main_mode == "tw_stock":
     st.subheader("🔍 台股全維度深度體檢")
 
-    # 1. ⭐ 常用自選股快捷按鈕 (2 欄大按鈕)
     tw_favs = user_memory.get("tw_favorites", ["2330.TW", "2317.TW", "2454.TW", "0050.TW"])
     st.caption("⭐ **我的常用股票清單**（點選一秒自動診斷）：")
 
-    # 渲染常用股票按鈕
     fav_cols = st.columns(2)
     for idx, fav_code in enumerate(tw_favs[:6]):
         col_target = fav_cols[idx % 2]
@@ -1440,7 +1446,6 @@ if st.session_state.main_mode == "tw_stock":
             st.session_state.auto_run_tw = True
             st.rerun()
 
-    # 2. 🕒 最近查詢紀錄 (若有則顯示)
     tw_recents = [r for r in user_memory.get("tw_recent", []) if r not in tw_favs][:4]
     if tw_recents:
         st.caption("🕒 **最近查詢紀錄**：")
@@ -1452,7 +1457,6 @@ if st.session_state.main_mode == "tw_stock":
                 st.session_state.auto_run_tw = True
                 st.rerun()
 
-    # 3. 代碼教學提示區
     st.caption("💡 **台股輸入格式指引**：上市請輸入 `代碼.TW`（如 `2330.TW`，亦支援純數字如 `2330` 自動轉上市）｜ 上櫃請輸入 `代碼.TWO`（如 `6488.TWO`）")
 
     col_input, col_btn = st.columns([2.4, 1.6])
@@ -1467,7 +1471,6 @@ if st.session_state.main_mode == "tw_stock":
     with col_btn:
         exec_clicked = st.button("🚀 診斷台股", type="primary", use_container_width=True, key="run_tw_btn")
 
-    # 常用清單管理抽屜
     with st.expander("⚙️ 管理我的台股常用清單", expanded=False):
         col_m1, col_m2 = st.columns([2.4, 1.6])
         new_fav_in = col_m1.text_input("新增常用代碼", placeholder="例：2603.TW", key="new_tw_fav_in")
@@ -1489,7 +1492,6 @@ if st.session_state.main_mode == "tw_stock":
                 save_user_data()
                 st.rerun()
 
-    # 防呆邏輯：純數字自動補上 .TW
     cleaned_tw_ticker = raw_tw_input.strip().upper()
     if cleaned_tw_ticker.isdigit():
         cleaned_tw_ticker = f"{cleaned_tw_ticker}.TW"
@@ -1510,11 +1512,10 @@ if st.session_state.main_mode == "tw_stock":
         r, df_stk, cur_t = st.session_state.analysis_cache_tw
         render_analysis_view(r, df_stk, mode_type="tw", ticker_raw=cur_t)
 
-# ================= 模式 2：🇺🇸 美股診斷 (含常用記憶與代碼指引) =================
+# ================= 模式 2：🇺🇸 美股診斷 =================
 elif st.session_state.main_mode == "us_stock":
     st.subheader("🇺🇸 美股全維度深度體檢 (全功能同規格)")
 
-    # 1. ⭐ 美股常用清單
     us_favs = user_memory.get("us_favorites", ["NVDA", "AAPL", "MSFT", "TSLA"])
     st.caption("⭐ **我的常用美股清單**（點選一秒自動診斷）：")
 
@@ -1527,7 +1528,6 @@ elif st.session_state.main_mode == "us_stock":
             st.session_state.auto_run_us = True
             st.rerun()
 
-    # 2. 🕒 美股最近查詢紀錄
     us_recents = [r for r in user_memory.get("us_recent", []) if r not in us_favs][:4]
     if us_recents:
         st.caption("🕒 **最近查詢紀錄**：")
@@ -1555,7 +1555,6 @@ elif st.session_state.main_mode == "us_stock":
 
     cleaned_us_ticker = raw_us_input.strip().upper()
 
-    # 管理美股常用抽屜
     with st.expander("⚙️ 管理我的美股常用清單", expanded=False):
         col_mu1, col_mu2 = st.columns([2.4, 1.6])
         new_u_fav_in = col_mu1.text_input("新增美股代碼", placeholder="例：AMD", key="new_us_fav_in")
@@ -1595,7 +1594,6 @@ elif st.session_state.main_mode == "tw_futures":
     st.subheader("🇹🇼 台灣期貨全維度專區 (優質契約・期顧共識・基差診斷)")
     st.caption("內建熱門台期契約池・自選查詢・多空目標壓力與保證金風控")
 
-    # 1. 快捷商品切換
     fq1, fq2 = st.columns(2)
     with fq1:
         if st.button("台指期 (大台)", use_container_width=True, key="fq_wtx"):
@@ -1630,7 +1628,6 @@ elif st.session_state.main_mode == "tw_futures":
     with col_f_btn:
         exec_fut_btn = st.button("🚀 診斷期貨", type="primary", use_container_width=True, key="run_fut_btn")
 
-    # 3. 獨立基差即時看板
     if df_market is not None and df_futures_bench is not None:
         twii_close = df_market.iloc[-1]['Close']
         bench_fut_close = df_futures_bench.iloc[-1]['Close']
