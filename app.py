@@ -364,7 +364,6 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
 
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
 
-        # 台股個股限定：整合 TWSE 盤中撮合
         if (".TW" in ticker.upper() or ".TWO" in ticker.upper()) and not ticker.endswith("=F"):
             twse_live = fetch_twse_realtime(ticker)
             if twse_live and twse_live["match_price"] > 0:
@@ -1053,29 +1052,21 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與架
     st.markdown("""
     本系統現已全面實現**台股、美股、台期、美期獨立分工監控**：
     
-    1. **🔍 台股全維度深度體檢**：
-       - 直連 **臺灣證交所 (TWSE)** 撮合主機（單位自動乘 1000 股對齊），顯示即時開盤跳空與紅黑 K 棒。
-       - 均線位階 (5/20/60MA)、階梯停利 SOP、建議張數風控計算機、無前視偏誤回測（扣除 0.45% 摩擦成本、真實 MDD）。
+    ### 💡【全市場查詢代碼輸入格式教學】
+    - **台股上市股票**：請輸入 `代碼.TW`（例如：`2330.TW`、`2603.TW`），**亦支援直接輸入 4 位數純代號**（如輸入 `2330`，系統將自動為您補正為 `2330.TW`）。
+    - **台股上櫃股票**：請務必加上 `.TWO`（例如：`6488.TWO`、`3293.TWO`、`00679B.TWO`），避免無法取得櫃買中心即時撮合行情。
+    - **美股現貨標的**：請輸入美股英文代碼（例如：`NVDA`、`AAPL`、`TSLA`、`MSFT`、`TSM`），輸入小寫字母系統將自動轉為標準大寫連線。
+    - **台灣期貨契約**：可直接點選快捷按鈕或輸入契約簡稱（`WTX` 大台、`MTX` 小台、`WMT` 微台、`TE` 電子期、`TF` 金融期），系統將自動對齊指數點位與該契約專屬保證金跳點規格。
+    - **美股四大期指**：支援 `NQ=F` (微那指)、`ES=F` (微標普)、`YM=F` (道瓊期)、`RTY=F` (羅素2000)。
     
-    2. **🇺🇸 美股即時診斷專區（同規格支援）**：
-       - 支援任何美股標的（如 NVDA, AAPL, TSLA, MSFT, TSM 等）。
-       - 具備同等 9 大維度：開盤跳空與 K 棒診斷、5/20/60MA 矩陣、基本面護城河、華爾街分析師平均目標價與評等。
-       - **美股專屬執行卡與風控**：以「股 (Shares)」為單位精算下單規模，扣除美股實務手續費進行 1 年回測。
-    
-    3. **🇹🇼 台灣期貨獨立專區（智慧路由修復版）**：
-       - **優質期貨契約池**：大台 (WTX)、小台 (MTX)、微台 (WMT)、電子期 (TE)、金融期 (TF)。
-       - **智慧路由與規格引擎**：自動對齊指數點位，載入微台(10元/點)、小台(50元/點)、大台(200元/點)真實保證金。
-       - **嚴格基差獨立性**：有真實獨立期指連線時才計算基差，連線缺失時明確警示，絕不造假基差。
-       - **期貨口數 (Lots) 風控計算機**：依保證金門檻精算建議下單口數，嚴防過度槓桿斷頭。
-    
-    4. **📈 美股期貨獨立專區**：
-       - 微那斯達克 (`NQ=F`)、微標普 (`ES=F`)、道瓊期 (`YM=F`)、羅素2000 (`RTY=F`) 即時動能。
-    
-    5. **📊 ETF 策略專區**：
-       - 市值型、高股息、海外科技與長天期美債四大分類雷達；微笑曲線定期定額加碼計算機。
-    
-    6. **💎 體質雷達 ＆ 📢 法說重大訊息 ＆ 💱 全球外匯**：
-       - 藍籌雙重量化濾網、個股即時重大新聞速查、台銀官方 USD/TWD 與日圓平倉風險監控。
+    ---
+    ### 🛠️【核心模組說明】
+    1. **🔍 台股全維度深度體檢**：直連 TWSE 撮合主機（單位自動乘 1000 股對齊），顯示即時開盤跳空、紅黑 K 棒、三均線矩陣 (5/20/60MA)、階梯停利 SOP、建議張數風控計算機、無前視偏誤回測（扣除 0.45% 摩擦成本、真實 MDD）。
+    2. **🇺🇸 美股即時診斷專區**：同規格支援美股開盤跳空、均線矩陣、基本面護城河、華爾街分析師平均目標價與評等，以「股 (Shares)」為單位精算風控。
+    3. **🇹🇼 台灣期貨獨立專區**：智慧路由對齊指數點位，載入微台/小台/大台真實保證金與每點價值，嚴格校驗期現貨基差，依保證金門檻精算建議口數 (Lots)。
+    4. **📈 美股期貨獨立專區**：即時四大美指期貨動能與科技 vs 價值輪動評估。
+    5. **📊 ETF 策略專區**：市值型、高股息、海外科技與長天期美債四大分類雷達；微笑曲線定期定額加碼計算機。
+    6. **💎 體質雷達 ＆ 📢 法說重大訊息 ＆ 💱 全球外匯**：藍籌雙重量化濾網、個股即時重大新聞速查、台銀官方 USD/TWD 與日圓平倉風險監控。
     """)
 
 # 頂部八大模式切換
@@ -1352,7 +1343,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         chart_data = df_asset[valid_cols].dropna().tail(60)
         st.line_chart(chart_data)
 
-# ================= 模式 1：🔍 台股診斷 =================
+# ================= 模式 1：🔍 台股診斷 (含代碼教學與自動防呆) =================
 if st.session_state.main_mode == "tw_stock":
     st.subheader("🔍 台股全維度深度體檢")
     qh1, qh2 = st.columns(2)
@@ -1375,27 +1366,41 @@ if st.session_state.main_mode == "tw_stock":
             st.session_state.analysis_cache_tw = None
             st.rerun()
 
+    # 代碼教學提示區
+    st.caption("💡 **台股輸入格式指引**：上市請輸入 `代碼.TW`（如 `2330.TW`，亦支援純數字如 `2330` 自動轉上市）｜ 上櫃請輸入 `代碼.TWO`（如 `6488.TWO`）")
+
     col_input, col_btn = st.columns([2.4, 1.6])
     with col_input:
-        ticker_input = st.text_input("輸入台股代碼", value=st.session_state.selected_tw_ticker, label_visibility="collapsed", key="tw_ticker_field")
+        raw_tw_input = st.text_input(
+            "輸入台股代碼",
+            value=st.session_state.selected_tw_ticker,
+            label_visibility="collapsed",
+            placeholder="例：2330.TW 或 6488.TWO",
+            key="tw_ticker_field"
+        )
     with col_btn:
         exec_clicked = st.button("🚀 診斷台股", type="primary", use_container_width=True, key="run_tw_btn")
 
+    # 防呆邏輯：純數字自動補上 .TW
+    cleaned_tw_ticker = raw_tw_input.strip().upper()
+    if cleaned_tw_ticker.isdigit():
+        cleaned_tw_ticker = f"{cleaned_tw_ticker}.TW"
+
     if exec_clicked:
         with st.spinner("連線 TWSE 撮合主機計算中..."):
-            df_stk = fetch_and_calc(ticker_input.strip())
+            df_stk = fetch_and_calc(cleaned_tw_ticker)
             if df_stk is not None:
-                r = analyze_full_stock(ticker_input.strip(), df_stk, df_market, df_futures_bench, df_tsm, df_sox, global_forex, asset_type="tw")
+                r = analyze_full_stock(cleaned_tw_ticker, df_stk, df_market, df_futures_bench, df_tsm, df_sox, global_forex, asset_type="tw")
                 st.session_state.analysis_cache_tw = (r, df_stk)
             else:
                 st.session_state.analysis_cache_tw = None
-                st.error("無法取得該標的行情數據，請確認代碼是否正確。")
+                st.error("無法取得該標的行情數據。請檢查是否為上櫃股票並補上 `.TWO`（例如 `6488.TWO`）。")
 
     if st.session_state.analysis_cache_tw is not None:
         r, df_stk = st.session_state.analysis_cache_tw
         render_analysis_view(r, df_stk, mode_type="tw")
 
-# ================= 模式 2：🇺🇸 美股診斷 =================
+# ================= 模式 2：🇺🇸 美股診斷 (含代碼教學與自動防呆) =================
 elif st.session_state.main_mode == "us_stock":
     st.subheader("🇺🇸 美股全維度深度體檢 (全功能同規格)")
     uq1, uq2 = st.columns(2)
@@ -1418,27 +1423,38 @@ elif st.session_state.main_mode == "us_stock":
             st.session_state.analysis_cache_us = None
             st.rerun()
 
+    # 美股教學提示區
+    st.caption("💡 **美股輸入格式指引**：請輸入美股英文代號（如 `NVDA`、`AAPL`、`TSLA`、`MSFT`、`TSM`），大小寫皆可自動識別轉換。")
+
     col_u_in, col_u_btn = st.columns([2.4, 1.6])
     with col_u_in:
-        us_ticker_in = st.text_input("輸入美股代碼", value=st.session_state.selected_us_ticker, label_visibility="collapsed", key="us_ticker_field")
+        raw_us_input = st.text_input(
+            "輸入美股代碼",
+            value=st.session_state.selected_us_ticker,
+            label_visibility="collapsed",
+            placeholder="例：NVDA、AAPL、TSM",
+            key="us_ticker_field"
+        )
     with col_u_btn:
         exec_us_btn = st.button("🚀 診斷美股", type="primary", use_container_width=True, key="run_us_btn")
 
+    cleaned_us_ticker = raw_us_input.strip().upper()
+
     if exec_us_btn:
         with st.spinner("連線美股即時行情與華爾街資料庫中..."):
-            df_stk_us = fetch_and_calc(us_ticker_in.strip().upper())
+            df_stk_us = fetch_and_calc(cleaned_us_ticker)
             if df_stk_us is not None:
-                r_us = analyze_full_stock(us_ticker_in.strip().upper(), df_stk_us, df_spx, None, None, df_sox, global_forex, asset_type="us")
+                r_us = analyze_full_stock(cleaned_us_ticker, df_stk_us, df_spx, None, None, df_sox, global_forex, asset_type="us")
                 st.session_state.analysis_cache_us = (r_us, df_stk_us)
             else:
                 st.session_state.analysis_cache_us = None
-                st.error("無法取得該美股行情，請確認代碼（如 NVDA, AAPL, TSM, AMD）。")
+                st.error("無法取得該美股行情，請確認英文代碼（如 NVDA, AAPL, TSM, AMD）。")
 
     if st.session_state.analysis_cache_us is not None:
         r_us, df_stk_us = st.session_state.analysis_cache_us
         render_analysis_view(r_us, df_stk_us, mode_type="us")
 
-# ================= 模式 3：🇹🇼 台灣期貨 (智慧路由修復版) =================
+# ================= 模式 3：🇹🇼 台灣期貨 (智慧路由版) =================
 elif st.session_state.main_mode == "tw_futures":
     st.subheader("🇹🇼 台灣期貨全維度專區 (優質契約・期顧共識・基差診斷)")
     st.caption("內建熱門台期契約池・自選查詢・多空目標壓力與保證金風控")
@@ -1464,6 +1480,9 @@ elif st.session_state.main_mode == "tw_futures":
             st.session_state.analysis_cache_fut = None
             st.rerun()
 
+    # 期貨教學提示區
+    st.caption("💡 **期貨輸入格式指引**：可點選上方按鈕或輸入契約簡稱（`WTX` 大台、`MTX` 小台、`WMT` 微台、`TE` 電子期、`TF` 金融期）。")
+
     # 2. 智慧輸入框
     col_f_in, col_f_btn = st.columns([2.4, 1.6])
     with col_f_in:
@@ -1471,6 +1490,7 @@ elif st.session_state.main_mode == "tw_futures":
             "輸入契約代碼",
             value=st.session_state.selected_fut_contract,
             label_visibility="collapsed",
+            placeholder="例：WTX、MTX、WMT",
             key="tw_fut_field"
         )
     with col_f_btn:
