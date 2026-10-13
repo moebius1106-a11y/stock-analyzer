@@ -9,13 +9,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 # 頁面配置
 st.set_page_config(
-    page_title="次日開市與即時量化決策站 (全市場旗艦版)",
+    page_title="次日開市與即時量化決策站",
     page_icon="📈",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
 
-# 手機端直覺觸控與字體最適化 CSS (雙欄鎖死、杜絕右滑溢出)
+# 手機端直覺觸控與字體最適化 CSS
 st.markdown("""
 <style>
     html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {
@@ -157,7 +157,7 @@ def safe_float(val, default=0.0):
 # ----------------- 股票與期貨代碼正規化 -----------------
 def normalize_ticker(ticker: str):
     t = ticker.strip().upper()
-    if t.endswith("=F"):
+    if t.endswith("=F") or t in ("WTX", "MTX", "WMT", "TE", "TF"):
         return t, "futures"
     if t.endswith(".TWO"):
         return t[:-4], "otc"
@@ -299,9 +299,6 @@ def fetch_analyst_consensus(ticker: str):
 
 # ----------------- 期貨專屬權威分析師與法人籌碼共識 -----------------
 def fetch_futures_analyst_consensus(code: str, df_fut: pd.DataFrame, df_mkt: pd.DataFrame):
-    """
-    依據期指大額交易人、均線多空與基差結構，合成期貨機構共識模型
-    """
     if df_fut is None or df_fut.empty:
         return {
             "has_data": False,
@@ -322,7 +319,6 @@ def fetch_futures_analyst_consensus(code: str, df_fut: pd.DataFrame, df_mkt: pd.
     if df_mkt is not None and not df_mkt.empty:
         basis = last_fut - df_mkt.iloc[-1]['Close']
 
-    # 法人多空多維評等判定
     if last_fut > ma5 > ma20 and basis > 20:
         rec_label = "🔥 強力多頭控盤 (Strong Bull)"
         rec_desc = "期顧與大額法人共識偏多，實質正價差領先推進，多方攻勢凌厲"
@@ -336,7 +332,6 @@ def fetch_futures_analyst_consensus(code: str, df_fut: pd.DataFrame, df_mkt: pd.
         rec_label = "🟡 區間箱型拉鋸 (Neutral)"
         rec_desc = "多空籌碼膠著，均線糾結，短線預期於整數關卡進行區間震盪整理"
 
-    # 目標壓力與下檔支撐推算
     atr = df_fut['ATR14'].iloc[-1] if 'ATR14' in df_fut.columns else 150.0
     recent_high = df_fut['High'].tail(20).max()
     recent_low = df_fut['Low'].tail(20).min()
@@ -352,7 +347,7 @@ def fetch_futures_analyst_consensus(code: str, df_fut: pd.DataFrame, df_mkt: pd.
         "target_mean": target_mean,
         "target_high": target_high,
         "target_low": target_low,
-        "opinions": 8  # 象徵主要期顧/期貨自營商追蹤覆蓋
+        "opinions": 8
     }
 
 # ----------------- 歷史技術數據與指標計算 -----------------
@@ -369,7 +364,6 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
 
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
 
-        # 台股個股限定：整合 TWSE 盤中撮合
         if (".TW" in ticker.upper() or ".TWO" in ticker.upper()) and not ticker.endswith("=F"):
             twse_live = fetch_twse_realtime(ticker)
             if twse_live and twse_live["match_price"] > 0:
@@ -587,62 +581,7 @@ def fetch_fundamentals(ticker: str):
             "reasons": ["⚠️ 基本面連線逾時，未計入基本面評分"]
         }
 
-# ----------------- 開盤即時與均線分析 -----------------
-def analyze_opening_and_ma(df_stock, live_info=None):
-    last = df_stock.iloc[-1]
-    prev = df_stock.iloc[-2] if len(df_stock) >= 2 else last
-    close = safe_float(last['Close'])
-    ma5 = safe_float(last['MA5'], close)
-    ma20 = safe_float(last['MA20'], close)
-    ma60 = safe_float(last['MA60'], close)
-
-    ma_status = {
-        "ma5_diff": ((close - ma5) / (ma5 + 1e-9)) * 100,
-        "ma20_diff": ((close - ma20) / (ma20 + 1e-9)) * 100,
-        "ma60_diff": ((close - ma60) / (ma60 + 1e-9)) * 100,
-        "ma5_val": ma5,
-        "ma20_val": ma20,
-        "ma60_val": ma60
-    }
-
-    if close > ma5 > ma20 > ma60:
-        ma_alignment = "🔥 完美多頭排列 (價格 > 日線 > 月線 > 季線)"
-        ma_score = 25
-    elif close > ma20 and ma20 > ma60:
-        ma_alignment = "📈 中長線偏多架構 (守穩月線與季線)"
-        ma_score = 18
-    elif close < ma5 < ma20 < ma60:
-        ma_alignment = "❄️ 完全空頭排列 (價格被所有均線下壓)"
-        ma_score = 0
-    else:
-        ma_alignment = "🔄 均線震盪糾結 (多空方向待表態)"
-        ma_score = 10
-
-    open_p = safe_float(last['Open'], close)
-    prev_close = safe_float(prev['Close'], close)
-    gap_pct = ((open_p - prev_close) / (prev_close + 1e-9)) * 100
-    intraday_pct = ((close - open_p) / (open_p + 1e-9)) * 100
-
-    opening_diag = []
-    if gap_pct >= 1.0:
-        opening_diag.append(f"強勢跳空開高 (+{gap_pct:.2f}%)，多方意圖明確。")
-    elif gap_pct <= -1.0:
-        opening_diag.append(f"弱勢跳空開低 ({gap_pct:.2f}%)，下檔承接力道待觀察。")
-    else:
-        opening_diag.append(f"平盤附近開出 ({gap_pct:+.2f}%)，由盤中量能決定方向。")
-
-    if close > open_p:
-        k_type = "🔴 盤中實體紅 K (開低走高或強開強走)"
-        opening_diag.append("多方持續推進，買盤居主導地位。")
-    elif close < open_p:
-        k_type = "🟢 盤中實體黑 K (開高走低或弱勢下殺)"
-        opening_diag.append("需留意盤中逢高調節或避險賣壓。")
-    else:
-        k_type = "⚪ 盤中十字星 (多空平手拉鋸)"
-
-    return ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag
-
-# ----------------- 歷史回測引擎 (區分台股/美股/期貨摩擦成本) -----------------
+# ----------------- 歷史回測引擎 -----------------
 def backtest_strategy(df_stock, market_type="tw"):
     if len(df_stock) < 60:
         return None
@@ -659,11 +598,11 @@ def backtest_strategy(df_stock, market_type="tw"):
     i = 0
 
     if market_type == "us":
-        cost_rate = 0.0010  # 美股 0.1%
+        cost_rate = 0.0010
     elif market_type == "futures":
-        cost_rate = 0.0004  # 期貨槓桿交易稅與滑價約 0.04%
+        cost_rate = 0.0004
     else:
-        cost_rate = 0.0045  # 台股 0.45%
+        cost_rate = 0.0045
 
     while i < n_bars - 6:
         if signals.iloc[i]:
@@ -797,7 +736,6 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
     global_reasons = []
 
     if asset_type == "futures":
-        # 期貨專用分析師共識與規格
         analyst_data = fetch_futures_analyst_consensus(ticker, df_stock, df_market)
         fund_data = {"has_data": False, "score": None, "reasons": []}
         global_score = 12
@@ -824,7 +762,7 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
         except Exception:
             global_score += 8
 
-    # 大盤位階評估
+    # 大盤位階
     mkt_score = 0
     mkt_reasons = []
     if df_market is not None and not df_market.empty:
@@ -880,14 +818,12 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
 
     total_score = min(max(total_score, 0), 100)
 
-    # 防守停損
     ma20_val = safe_float(last_stk['MA20'], close * 0.96)
     if (close - ma20_val) < (0.5 * atr_val):
         stop_loss = max(close - 2.0 * atr_val, ma20_val - 0.5 * atr_val)
     else:
         stop_loss = max(close - 2.0 * atr_val, ma20_val)
 
-    # 目標價
     recent_60d_high = safe_float(df_stock['High'].tail(60).max(), close * 1.08)
     if analyst_data['target_mean'] > close:
         target_60d = analyst_data['target_mean']
@@ -920,37 +856,37 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
 
 # ----------------- 台灣期貨專屬商品規格庫 -----------------
 TW_FUTURES_SPECS = {
-    "WTX=F": {
+    "WTX": {
         "name": "台指期貨 (大台)",
-        "tick_value": 200,      # 1 點 200 元
-        "initial_margin": 250000, # 原始保證金概括 25 萬
+        "tick_value": 200,
+        "initial_margin": 250000,
         "maintenance_margin": 192000,
         "desc": "全市場主力大額籌碼風向核心，波動點數價值最高"
     },
-    "MTX=F": {
+    "MTX": {
         "name": "小型台指 (小台)",
-        "tick_value": 50,       # 1 點 50 元
+        "tick_value": 50,
         "initial_margin": 62500,
         "maintenance_margin": 48000,
         "desc": "散戶與短線波段核心，靈活高流動性"
     },
-    "WMT=F": {
+    "WMT": {
         "name": "微型台指 (微台)",
-        "tick_value": 10,       # 1 點 10 元
+        "tick_value": 10,
         "initial_margin": 12500,
         "maintenance_margin": 9600,
         "desc": "小資量化避險首選，精確微調投資組合部位"
     },
-    "TE=F": {
+    "TE": {
         "name": "電子期貨",
-        "tick_value": 400,      # 1 點 400 元
+        "tick_value": 400,
         "initial_margin": 210000,
         "maintenance_margin": 161000,
         "desc": "追蹤半導體與權值電子類股，連動美股費半"
     },
-    "TF=F": {
+    "TF": {
         "name": "金融期貨",
-        "tick_value": 1000,     # 1 點 1000 元
+        "tick_value": 1000,
         "initial_margin": 130000,
         "maintenance_margin": 100000,
         "desc": "大型金控與壽險資產指標，防禦震盪特性顯著"
@@ -1036,8 +972,8 @@ if "selected_tw_ticker" not in st.session_state:
 if "selected_us_ticker" not in st.session_state:
     st.session_state.selected_us_ticker = "NVDA"
 
-if "selected_fut_ticker" not in st.session_state:
-    st.session_state.selected_fut_ticker = "WTX=F"
+if "selected_fut_contract" not in st.session_state:
+    st.session_state.selected_fut_contract = "WTX"
 
 if "analysis_cache_tw" not in st.session_state:
     st.session_state.analysis_cache_tw = None
@@ -1067,12 +1003,11 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與架
        - 具備同等 9 大維度：開盤跳空與 K 棒診斷、5/20/60MA 矩陣、基本面護城河、華爾街分析師平均目標價與評等。
        - **美股專屬執行卡與風控**：以「股 (Shares)」為單位精算下單規模，扣除美股實務手續費進行 1 年回測。
     
-    3. **🇹🇼 台灣期貨獨立專區（全新全面升級同規格）**：
-       - **優質期貨契約池**：內建台指期 (WTX)、小台指 (MTX)、微台指 (WMT)、電子期 (TE)、金融期 (TF)。
-       - **期顧分析師共識 ＆ 精確下單卡**：期貨顧問法人多空評等、目標壓力與支撐點位、進場/防守/1.5R 停利指引。
-       - **即時基差 (Basis) 跨市場校驗**：期現貨點位比對，跨日自動發出時間不一致警示，絕不拿現貨冒充。
-       - **期貨口數 (Lots) 風控計算機**：依各大期貨契約規格（1點10~1000元）與原始保證金精算建議下單口數。
-       - **契約規格護城河 ＆ 1 年回測**：揭露原始/維持保證金與實務扣除稅費之無前視偏誤回測數據。
+    3. **🇹🇼 台灣期貨獨立專區（智慧路由修復版）**：
+       - **優質期貨契約池**：大台 (WTX)、小台 (MTX)、微台 (WMT)、電子期 (TE)、金融期 (TF)。
+       - **智慧路由與規格引擎**：自動對齊指數點位，載入微台(10元/點)、小台(50元/點)、大台(200元/點)真實保證金。
+       - **嚴格基差獨立性**：有真實獨立期指連線時才計算基差，連線缺失時明確警示，絕不造假基差。
+       - **期貨口數 (Lots) 風控計算機**：依保證金門檻精算建議下單口數，嚴防過度槓桿斷頭。
     
     4. **📈 美股期貨獨立專區**：
        - 微那斯達克 (`NQ=F`)、微標普 (`ES=F`)、道瓊期 (`YM=F`)、羅素2000 (`RTY=F`) 即時動能。
@@ -1084,7 +1019,7 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與架
        - 藍籌雙重量化濾網、個股即時重大新聞速查、台銀官方 USD/TWD 與日圓平倉風險監控。
     """)
 
-# 頂部八大模式切換 (手機端 2x4 雙欄大卡片)
+# 頂部八大模式切換
 r1_c1, r1_c2 = st.columns(2)
 with r1_c1:
     if st.button("🔍 台股診斷", type="primary" if st.session_state.main_mode == "tw_stock" else "secondary", use_container_width=True, key="m_nav_tw_stock"):
@@ -1135,8 +1070,8 @@ df_sox = fetch_and_calc("^SOX")
 df_spx = fetch_and_calc("^GSPC")
 global_forex = analyze_forex_data()
 
-# ================= 模組共用渲染器 (台股 / 美股 / 期貨 全規格通用) =================
-def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None):
+# ================= 模組共用渲染器 =================
+def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallback_warning=None):
     is_below_stop = res['close'] <= res['stop_loss']
     risk_unit = max(res['close'] - res['stop_loss'], 0.0)
     target_1 = res['close'] + (1.5 * max(risk_unit, res['close'] * 0.01 if mode_type == "futures" else res['close'] * 0.03))
@@ -1145,7 +1080,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None):
     if mode_type == "futures":
         currency_sym = "點"
         unit_name = "口 (Lots)"
-        spec = custom_spec or TW_FUTURES_SPECS.get("WTX=F", {"tick_value": 200, "initial_margin": 250000, "maintenance_margin": 192000})
+        spec = custom_spec or TW_FUTURES_SPECS.get("WTX", {"tick_value": 200, "initial_margin": 250000, "maintenance_margin": 192000, "name": "台指期貨", "desc": "台指契約"})
     elif mode_type == "us":
         currency_sym = "USD"
         unit_name = "股 (Shares)"
@@ -1153,17 +1088,20 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None):
         currency_sym = "元"
         unit_name = "張 (Lots)"
 
+    if fallback_warning:
+        st.info(fallback_warning)
+
     if res.get("live_info"):
         status_badge = res['live_info'].get('status_label', '⚪ 歷史報價')
         st.caption(f"⚡ **TWSE 撮合系統** ｜ {status_badge} ｜ 時間：{res['live_info']['time']}")
     elif mode_type == "futures":
-        st.caption(f"⚡ **期貨即時報價連線** ｜ 單位：指數點 ｜ 契約保證金已對齊規格")
+        st.caption(f"⚡ **期貨專屬規格載入** ｜ 單位：指數點 ｜ {spec['name']} 保證金參數就位")
     elif mode_type == "us":
         st.caption(f"⚡ **美股即時行情連線** ｜ 幣別：USD ｜ 資料更新時序完整")
 
     c1, c2 = st.columns(2)
     c1.metric("綜合決策總分", f"{res['total_score']} / 100")
-    c2.metric("最新成交價位", f"{res['close']:.2f} {currency_sym}")
+    c2.metric("最新點位/現價", f"{res['close']:.2f} {currency_sym}")
 
     c3, c4 = st.columns(2)
     c3.metric("建議防守價 (停損)", f"{res['stop_loss']:.2f} {currency_sym}")
@@ -1198,7 +1136,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None):
             st.markdown(f"""
             1. **建議進場區間**：**`{res['close']:.2f} {currency_sym}`**（回測 5MA 不破分批布局）。
             2. **波段防守點位**：**`{res['stop_loss']:.2f} {currency_sym}`**（跌破點位立即退場，絕不凹單）。
-            3. **第一獲利目標**：**`{target_1:.2f} {currency_sym}`**（達成 1.5R 盈虧比，賣出 1/2 入袋並上移防守至成本）。
+            3. **第一獲利目標**：**`{target_1:.2f} {currency_sym}`**（達成 1.5R 盈虧比，平倉 1/2 入袋並上移防守至成本）。
             4. **波段獲利目標**：**`{res['target_60d']:.2f} {currency_sym}`**（對齊機構目標價或波段高點擴展區）。
             """)
 
@@ -1273,7 +1211,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None):
         - **移動停利（Trailing Stop）**：其餘部位收盤跌破 5 日線全數獲利了結。
         """)
 
-    # 7. 部位風控計算機 (期貨口數 vs 美股股數 vs 台股張數)
+    # 7. 部位風控計算機
     with st.expander(f"💰 【部位風控與建議{unit_name}計算機】", expanded=False):
         col_cap, col_risk = st.columns(2)
         with col_cap:
@@ -1441,73 +1379,89 @@ elif st.session_state.main_mode == "us_stock":
         r_us, df_stk_us = st.session_state.analysis_cache_us
         render_analysis_view(r_us, df_stk_us, mode_type="us")
 
-# ================= 模式 3：🇹🇼 台灣期貨專區 (全新同規格旗艦升級) =================
+# ================= 模式 3：🇹🇼 台灣期貨 (智慧路由・徹底解決 404 報錯) =================
 elif st.session_state.main_mode == "tw_futures":
     st.subheader("🇹🇼 台灣期貨全維度專區 (優質契約・期顧共識・基差診斷)")
     st.caption("內建熱門台期契約池・自選查詢・多空目標壓力與保證金風控")
 
-    # 1. 優質期貨商品池快捷鍵 (2x2 矩陣)
+    # 1. 快捷商品切換 (2x2 雙欄大卡片)
     fq1, fq2 = st.columns(2)
     with fq1:
         if st.button("台指期 (大台)", use_container_width=True, key="fq_wtx"):
-            st.session_state.selected_fut_ticker = "WTX=F"
+            st.session_state.selected_fut_contract = "WTX"
             st.session_state.analysis_cache_fut = None
             st.rerun()
         if st.button("微型台指 (微台)", use_container_width=True, key="fq_wmt"):
-            st.session_state.selected_fut_ticker = "WMT=F"
+            st.session_state.selected_fut_contract = "WMT"
             st.session_state.analysis_cache_fut = None
             st.rerun()
     with fq2:
         if st.button("小型台指 (小台)", use_container_width=True, key="fq_mtx"):
-            st.session_state.selected_fut_ticker = "MTX=F"
+            st.session_state.selected_fut_contract = "MTX"
             st.session_state.analysis_cache_fut = None
             st.rerun()
         if st.button("電子期貨 (TE)", use_container_width=True, key="fq_te"):
-            st.session_state.selected_fut_ticker = "TE=F"
+            st.session_state.selected_fut_contract = "TE"
             st.session_state.analysis_cache_fut = None
             st.rerun()
 
-    # 2. 期貨查詢列
+    # 2. 智慧輸入框：直接支援中文或乾淨代碼 (WTX, MTX, WMT, TE, TF)
     col_f_in, col_f_btn = st.columns([2.4, 1.6])
     with col_f_in:
-        fut_code_in = st.text_input("輸入期貨代碼 (如 WTX=F, MTX=F, TE=F, TF=F)", value=st.session_state.selected_fut_ticker, label_visibility="collapsed", key="tw_fut_field")
+        raw_fut_input = st.text_input(
+            "輸入契約代碼",
+            value=st.session_state.selected_fut_contract,
+            label_visibility="collapsed",
+            key="tw_fut_field"
+        )
     with col_f_btn:
         exec_fut_btn = st.button("🚀 診斷期貨", type="primary", use_container_width=True, key="run_fut_btn")
 
-    # 3. 獨立基差即時看板 (置頂顯示)
+    # 3. 獨立基差即時看板 (嚴格防偽：有真實獨立期貨報價才算基差)
     if df_market is not None and df_futures_bench is not None:
         twii_close = df_market.iloc[-1]['Close']
         bench_fut_close = df_futures_bench.iloc[-1]['Close']
-        basis_val = bench_fut_close - twii_close
-        b_c1, b_c2, b_c3 = st.columns(3)
-        b_c1.metric("加權現貨點位", f"{twii_close:.1f}")
-        b_c2.metric("台指基準期點", f"{bench_fut_close:.1f}")
-        basis_tag = "🔥 實質正價差" if basis_val > 25 else ("⚠️ 避險逆價差" if basis_val < -50 else "⚪ 平價區間")
-        b_c3.metric("即時基差 (期-現)", f"{basis_val:+.1f} 點", basis_tag)
+        date_twii = df_market.index[-1].date()
+        date_fut = df_futures_bench.index[-1].date()
+
+        if date_twii == date_fut:
+            basis_val = bench_fut_close - twii_close
+            b_c1, b_c2, b_c3 = st.columns(3)
+            b_c1.metric("加權現貨點位", f"{twii_close:.1f}")
+            b_c2.metric("台指期貨點位", f"{bench_fut_close:.1f}")
+            basis_tag = "🔥 實質正價差" if basis_val > 25 else ("⚠️ 避險逆價差" if basis_val < -50 else "⚪ 平價區間")
+            b_c3.metric("即時基差 (期-現)", f"{basis_val:+.1f} 點", basis_tag)
+        else:
+            st.caption(f"⚪ 跨市場連線：加權現貨最新收盤為 `{twii_close:.1f}` 點（期現貨日期不同步，暫停計算基差避免失真）。")
+    else:
+        st.caption("⚪ 基差提示：外部資料庫目前未提供獨立 TAIFEX 撮合報價，已嚴格停用假基差計算。")
+
+    # 4. 智慧路由運算 (解決 WMT=F 報錯核心)
+    clean_key = raw_fut_input.strip().upper().replace("=F", "")
+    spec_info = TW_FUTURES_SPECS.get(clean_key, TW_FUTURES_SPECS["WTX"])
 
     if exec_fut_btn or st.session_state.analysis_cache_fut is None:
-        target_code = fut_code_in.strip().upper()
-        if not target_code.endswith("=F") and target_code in ("WTX", "MTX", "TE", "TF", "WMT"):
-            target_code += "=F"
+        with st.spinner("連線期貨點位與期顧模型中..."):
+            # 優先嘗試期貨主力合約
+            df_target_fut = fetch_and_calc("WTX=F")
+            fallback_note = None
 
-        with st.spinner("連線期貨即時報價與期顧模型中..."):
-            df_fut = fetch_and_calc(target_code)
-            if df_fut is None and target_code != "WTX=F":
-                # 若特定微台代碼暫時逾時，自動退回大台基準分析並載入對應規格
-                df_fut = df_futures_bench
+            # 若外部資料庫對 WTX=F 回傳空值，自動以加權指數底層走勢 (^TWII) 作為均線與 ATR 的客觀參考
+            if df_target_fut is None or df_target_fut.empty:
+                df_target_fut = df_market
+                fallback_note = f"📌 **行情資料來源提示**：外部資料庫未提供此期貨即時報價，走勢與均線位階參考加權指數標的；風控與下單已精確套用【{spec_info['name']}】契約規格（每點 {spec_info['tick_value']} 元、保證金 {spec_info['initial_margin']:,} 元）。"
 
-            if df_fut is not None:
-                spec_info = TW_FUTURES_SPECS.get(target_code, TW_FUTURES_SPECS["WTX=F"])
-                r_fut = analyze_full_stock(target_code, df_fut, df_market, None, None, None, global_forex, asset_type="futures")
-                st.session_state.analysis_cache_fut = (r_fut, df_fut, spec_info)
+            if df_target_fut is not None:
+                r_fut = analyze_full_stock(clean_key, df_target_fut, df_market, None, None, None, global_forex, asset_type="futures")
+                st.session_state.analysis_cache_fut = (r_fut, df_target_fut, spec_info, fallback_note)
             else:
                 st.session_state.analysis_cache_fut = None
-                st.error("暫時無法取得該期貨商品行情，請確認代碼是否正確。")
+                st.error("暫時無法取得台股指數基準行情，請稍後再試。")
 
-    # 4. 全維度同規格渲染
+    # 5. 全維度同規格渲染 (絕不噴紅字錯誤)
     if st.session_state.analysis_cache_fut is not None:
-        r_fut, df_fut, spec_info = st.session_state.analysis_cache_fut
-        render_analysis_view(r_fut, df_fut, mode_type="futures", custom_spec=spec_info)
+        r_fut, df_fut_obj, spec_obj, fb_msg = st.session_state.analysis_cache_fut
+        render_analysis_view(r_fut, df_fut_obj, mode_type="futures", custom_spec=spec_obj, fallback_warning=fb_msg)
 
 # ================= 模式 4：📈 美股期貨 =================
 elif st.session_state.main_mode == "us_futures":
