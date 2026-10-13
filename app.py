@@ -15,54 +15,98 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 手機端直覺觸控 CSS
+# 手機端直覺觸控與字體最適化 CSS (徹底修復溢出與標題遮擋)
 st.markdown("""
 <style>
+    /* 1. 鎖死全站寬度，杜絕任何橫向捲軸與右滑溢出 */
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {
+        overflow-x: hidden !important;
+        max-width: 100vw !important;
+    }
+
+    /* 2. 恢復頂部安全邊距，讓標題完整露出在 Streamlit 頂部黑條下方 */
     .block-container {
-        padding-top: 1rem !important;
+        padding-top: 3.6rem !important;
         padding-bottom: 2rem !important;
-        padding-left: 0.8rem !important;
-        padding-right: 0.8rem !important;
+        padding-left: 0.85rem !important;
+        padding-right: 0.85rem !important;
+        max-width: 100% !important;
+        overflow-x: hidden !important;
     }
-    div.stButton > button {
-        width: 100%;
-        height: 2.8rem !important;
-        font-size: 0.98rem !important;
-        font-weight: 600 !important;
-        border-radius: 10px !important;
-        margin-bottom: 0.2rem;
-        padding: 0 0.5rem !important;
+
+    /* 3. 標題尺寸最佳化：適度縮減至 1.4rem，單行顯示不換行、顯眼清晰 */
+    h1 {
+        font-size: 1.40rem !important;
+        font-weight: 800 !important;
+        line-height: 1.35 !important;
+        margin-top: 0.2rem !important;
+        margin-bottom: 0.5rem !important;
+        padding: 0 !important;
+        display: block !important;
+        letter-spacing: -0.01em !important;
     }
-    div.stTextInput > div > div > input {
-        height: 2.8rem !important;
+    h2 {
+        font-size: 1.20rem !important;
+        font-weight: 700 !important;
+        margin-top: 0.4rem !important;
+        margin-bottom: 0.3rem !important;
+    }
+    h3 {
         font-size: 1.05rem !important;
+        font-weight: 600 !important;
+    }
+
+    /* 4. 按鈕字體放大並加粗 (1.08rem)，字型清晰、好按好讀 */
+    div.stButton > button {
+        width: 100% !important;
+        min-height: 3.2rem !important;
+        font-size: 1.08rem !important;
+        font-weight: 700 !important;
+        border-radius: 12px !important;
+        margin-bottom: 0.35rem !important;
+        padding: 0.4rem 0.6rem !important;
+        line-height: 1.3 !important;
+        letter-spacing: 0.02em !important;
+    }
+
+    /* 5. 輸入框高度與文字大小調和 */
+    div.stTextInput > div > div > input {
+        height: 3.0rem !important;
+        font-size: 1.1rem !important;
         border-radius: 10px !important;
     }
+
+    /* 6. 數值指標卡片字體最適化 */
     div[data-testid="stMetric"] {
         background-color: rgba(128, 128, 128, 0.08);
         border: 1px solid rgba(128, 128, 128, 0.18);
-        padding: 0.5rem 0.7rem !important;
+        padding: 0.6rem 0.8rem !important;
         border-radius: 12px;
-        margin-bottom: 0.3rem;
+        margin-bottom: 0.35rem;
     }
     div[data-testid="stMetricLabel"] {
-        font-size: 0.85rem !important;
+        font-size: 0.88rem !important;
+        font-weight: 600 !important;
     }
     div[data-testid="stMetricValue"] {
-        font-size: 1.25rem !important;
+        font-size: 1.35rem !important;
+        font-weight: 700 !important;
     }
+
+    /* 7. 折疊卡片標題字體 */
     .streamlit-expanderHeader {
         font-size: 1.02rem !important;
         font-weight: 600 !important;
         border-radius: 10px !important;
         background-color: rgba(128, 128, 128, 0.05) !important;
+        padding: 0.5rem 0.8rem !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
 TAIPEI_TZ = timezone(timedelta(hours=8))
 
-# ----------------- 通行密碼防護 (P0-1: 徹底移除預設密碼) -----------------
+# ----------------- 通行密碼防護 -----------------
 try:
     ACCESS_PASSWORD = st.secrets["PASSWORD"]
 except Exception:
@@ -71,8 +115,6 @@ except Exception:
 if ACCESS_PASSWORD is None:
     st.error("🚨 **系統安全性錯誤：未檢測到 Streamlit Secrets [PASSWORD] 設定！**")
     st.markdown("""
-    依據量化風控與系統安全原則，**本系統已嚴格拒絕使用公開預設密碼啟動**。
-    
     **【解決步驟】**：
     1. 前往 Streamlit Cloud 管理後台（App Settings > Secrets）。
     2. 新增設定內容：
@@ -98,12 +140,11 @@ if not st.session_state.authenticated:
             st.error("密碼錯誤，請重新輸入。")
     st.stop()
 
-# ----------------- 數值安全轉換工具 (P1-4: 重構 Series 取值與容器判斷) -----------------
+# ----------------- 數值安全轉換工具 -----------------
 def safe_float(val, default=0.0):
     try:
         if val is None:
             return default
-        # Series 嚴格以 iloc[0] 提取位置，防止標籤索引例外
         if isinstance(val, pd.Series):
             if val.empty:
                 return default
@@ -136,7 +177,7 @@ def normalize_ticker(ticker: str):
         return t[:-3], "tse"
     return t, "tse"
 
-# ----------------- 權威 API 1：臺灣證券交易所官方即時行情 (含時間戳與狀態) -----------------
+# ----------------- 權威 API 1：臺灣證券交易所官方即時行情 -----------------
 def fetch_twse_realtime(ticker: str):
     code, market = normalize_ticker(ticker)
     ex_ch = f"{market}_{code}.tw"
@@ -164,10 +205,8 @@ def fetch_twse_realtime(ticker: str):
                 date_str = item.get("d", "")
                 time_str = item.get("t", "")
 
-                # P1-5: 驗證撮合時間新鮮度 (09:00:00 ~ 13:30:00 判定為盤中交易)
                 now_taipei = datetime.now(TAIPEI_TZ)
                 today_str = now_taipei.strftime("%Y%m%d")
-                status_label = "⚪ 盤後收盤資料"
 
                 if date_str == today_str:
                     if "09:00:00" <= time_str <= "13:35:00":
@@ -337,7 +376,7 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
     except Exception:
         return None
 
-# ----------------- 基本面與 ETF 數據 (P0-3: 嚴禁假分數，實事求是) -----------------
+# ----------------- 基本面與 ETF 數據 -----------------
 @st.cache_data(ttl=7200)
 def fetch_fundamentals(ticker: str):
     clean_code, _ = normalize_ticker(ticker)
@@ -356,7 +395,6 @@ def fetch_fundamentals(ticker: str):
             beta_val = safe_float(beta_raw, default=None)
             nav_val = safe_float(nav_raw, default=None)
 
-            # P0-3: 若殖利率與 Beta 全數缺失，不可偽造假分數
             if yield_val is None and beta_val is None:
                 return {
                     "has_data": False,
@@ -551,7 +589,7 @@ def analyze_opening_and_ma(df_stock, live_info=None):
 
     return ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag
 
-# ----------------- 歷史回測引擎 (P0-2: 單部位無重疊・摩擦成本・淨值 MDD) -----------------
+# ----------------- 歷史回測引擎 -----------------
 def backtest_strategy(df_stock):
     if len(df_stock) < 60:
         return None
@@ -566,16 +604,13 @@ def backtest_strategy(df_stock):
     n_bars = len(df_stock)
     trade_returns = []
     i = 0
-    COST_RATE = 0.0045  # 來回手續費與證交稅約 0.45%
+    COST_RATE = 0.0045
 
-    # P0-2: 單部位循序推進模型（持倉中嚴格跳過新訊號，杜絕虛擬重疊複利）
     while i < n_bars - 6:
         if signals.iloc[i]:
-            # 訊號於 i 日收盤確認，次日 i+1 日以 Open 進場（杜絕前視偏誤）
             entry_p = safe_float(df_stock['Open'].iloc[i + 1])
             if entry_p <= 0:
                 entry_p = safe_float(df_stock['Close'].iloc[i + 1])
-            # 持有 5 個交易日，於 i+6 日以 Open 出場
             exit_p = safe_float(df_stock['Open'].iloc[i + 6])
             if exit_p <= 0:
                 exit_p = safe_float(df_stock['Close'].iloc[i + 6])
@@ -583,7 +618,7 @@ def backtest_strategy(df_stock):
             if entry_p > 0 and exit_p > 0:
                 net_ret = ((exit_p - entry_p) / entry_p - COST_RATE) * 100.0
                 trade_returns.append(net_ret)
-                i += 6  # 結清部位後才尋找下一次進場點
+                i += 6
                 continue
         i += 1
 
@@ -595,7 +630,6 @@ def backtest_strategy(df_stock):
     avg_return = float(np.mean(trade_returns))
     worst_single_loss = float(min(trade_returns))
 
-    # 計算累積資產淨值曲線 (Equity Curve) 與真實最大回撤 (MDD)
     equity_curve = [100.0]
     for r in trade_returns:
         equity_curve.append(equity_curve[-1] * (1.0 + r / 100.0))
@@ -934,31 +968,33 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與架
        - 直連臺灣銀行官方牌告匯率系統，即時追蹤 USD/TWD、美元指數 (DXY) 與日圓套利平倉風險。
     """)
 
-# 頂部六大模式切換
-r1_c1, r1_c2, r1_c3 = st.columns(3)
+# 頂部六大模式切換 (手機端採用穩定的 2x3 大按鈕排版，字體加粗加大)
+r1_c1, r1_c2 = st.columns(2)
 with r1_c1:
     if st.button("🔍 個股診斷", type="primary" if st.session_state.main_mode == "single" else "secondary", use_container_width=True, key="m_nav_single"):
         st.session_state.main_mode = "single"
         st.rerun()
 with r1_c2:
-    if st.button("📊 ETF專區", type="primary" if st.session_state.main_mode == "etf" else "secondary", use_container_width=True, key="m_nav_etf"):
+    if st.button("📊 ETF 專區", type="primary" if st.session_state.main_mode == "etf" else "secondary", use_container_width=True, key="m_nav_etf"):
         st.session_state.main_mode = "etf"
         st.rerun()
-with r1_c3:
+
+r2_c1, r2_c2 = st.columns(2)
+with r2_c1:
     if st.button("⚡ 期貨連動", type="primary" if st.session_state.main_mode == "futures" else "secondary", use_container_width=True, key="m_nav_futures"):
         st.session_state.main_mode = "futures"
         st.rerun()
-
-r2_c1, r2_c2, r2_c3 = st.columns(3)
-with r2_c1:
+with r2_c2:
     if st.button("💎 體質雷達", type="primary" if st.session_state.main_mode == "market" else "secondary", use_container_width=True, key="m_nav_market"):
         st.session_state.main_mode = "market"
         st.rerun()
-with r2_c2:
+
+r3_c1, r3_c2 = st.columns(2)
+with r3_c1:
     if st.button("📢 法說消息", type="primary" if st.session_state.main_mode == "events" else "secondary", use_container_width=True, key="m_nav_events"):
         st.session_state.main_mode = "events"
         st.rerun()
-with r2_c3:
+with r3_c2:
     if st.button("💱 外匯大盤", type="primary" if st.session_state.main_mode == "forex" else "secondary", use_container_width=True, key="m_nav_forex"):
         st.session_state.main_mode = "forex"
         st.rerun()
@@ -974,27 +1010,30 @@ global_forex = analyze_forex_data()
 
 # ================= 模式 1：個股全維度深度體檢 =================
 if st.session_state.main_mode == "single":
-    h_c1, h_c2, h_c3, h_c4 = st.columns(4)
-    if h_c1.button("台積電", use_container_width=True, key="qp_2330"):
-        st.session_state.selected_ticker = "2330.TW"
-        st.session_state.analysis_cache = None
-        st.rerun()
-    if h_c2.button("聯發科", use_container_width=True, key="qp_2454"):
-        st.session_state.selected_ticker = "2454.TW"
-        st.session_state.analysis_cache = None
-        st.rerun()
-    if h_c3.button("鴻海", use_container_width=True, key="qp_2317"):
-        st.session_state.selected_ticker = "2317.TW"
-        st.session_state.analysis_cache = None
-        st.rerun()
-    if h_c4.button("0050", use_container_width=True, key="qp_0050"):
-        st.session_state.selected_ticker = "0050.TW"
-        st.session_state.analysis_cache = None
-        st.rerun()
+    # 快捷股票切換：改為 2x2 雙欄排版，防止在小螢幕撐爆水平寬度
+    qh1, qh2 = st.columns(2)
+    with qh1:
+        if st.button("台積電 (2330)", use_container_width=True, key="qp_2330"):
+            st.session_state.selected_ticker = "2330.TW"
+            st.session_state.analysis_cache = None
+            st.rerun()
+        if st.button("鴻海 (2317)", use_container_width=True, key="qp_2317"):
+            st.session_state.selected_ticker = "2317.TW"
+            st.session_state.analysis_cache = None
+            st.rerun()
+    with qh2:
+        if st.button("聯發科 (2454)", use_container_width=True, key="qp_2454"):
+            st.session_state.selected_ticker = "2454.TW"
+            st.session_state.analysis_cache = None
+            st.rerun()
+        if st.button("元大台灣50 (0050)", use_container_width=True, key="qp_0050"):
+            st.session_state.selected_ticker = "0050.TW"
+            st.session_state.analysis_cache = None
+            st.rerun()
 
-    col_input, col_btn = st.columns([2.6, 1.4])
+    col_input, col_btn = st.columns([2.4, 1.6])
     with col_input:
-        ticker_input = st.text_input("輸入查詢代碼", value=st.session_state.selected_ticker, label_visibility="collapsed", key="ticker_input_field")
+        ticker_input = st.text_input("輸入代碼", value=st.session_state.selected_ticker, label_visibility="collapsed", key="ticker_input_field")
     with col_btn:
         exec_clicked = st.button("🚀 執行診斷", type="primary", use_container_width=True, key="run_single_analysis_btn")
 
@@ -1016,7 +1055,6 @@ if st.session_state.main_mode == "single":
         is_etf_asset = res['fund_data'].get('is_etf', False)
         an_data = res['analyst_data']
 
-        # P1-5: 清楚揭示數據源、時間戳與撮合狀態
         if res.get("live_info"):
             asset_type_badge = "📊 ETF" if is_etf_asset else "🏢 個股"
             status_badge = res['live_info'].get('status_label', '⚪ 歷史報價')
@@ -1090,7 +1128,7 @@ if st.session_state.main_mode == "single":
             m2.metric("月線 (20MA)", f"{res['ma_status']['ma20_val']:.2f}", f"{res['ma_status']['ma20_diff']:+.1f}%")
             m3.metric("季線 (60MA)", f"{res['ma_status']['ma60_val']:.2f}", f"{res['ma_status']['ma60_diff']:+.1f}%")
 
-        # 模組 5：體質護城河 (P0-3: 嚴格無虛構分數)
+        # 模組 5：體質護城河
         fund_title = "💎 【ETF 專屬體質與配息分析】" if is_etf_asset else "💎 【企業基本面體質護城河】"
         with st.expander(fund_title, expanded=False):
             f_data = res['fund_data']
@@ -1151,7 +1189,7 @@ if st.session_state.main_mode == "single":
             b3.metric("目標獲利區", f"{res['target_60d']:.2f} 元")
             b4.metric("預期盈虧比 (R/R)", f"{rr_ratio:.2f} : 1")
 
-        # 模組 8：無前視偏誤回測 (P0-2: 單部位循序模型)
+        # 模組 8：無前視偏誤回測
         with st.expander("📊 【過去 1 年策略回測數據 (無前視偏誤・單部位模型)】", expanded=False):
             bt = backtest_strategy(df_stock)
             if bt:
@@ -1174,24 +1212,31 @@ if st.session_state.main_mode == "single":
             chart_data = df_stock[valid_cols].dropna().tail(60)
             st.line_chart(chart_data)
 
-# ================= 模式 2：📊 ETF 專區 (P1-7: 錯誤收集不靜默) =================
+# ================= 模式 2：📊 ETF 專區 =================
 elif st.session_state.main_mode == "etf":
     st.subheader("📊 ETF 旗艦量化策略雷達")
     st.caption("熱門 ETF 全方位即時體檢・配息防禦 × 均線動能 × 定期定額試算")
 
-    f1, f2, f3, f4 = st.columns(4)
-    if f1.button("全部", type="primary" if st.session_state.etf_category_filter == "全部" else "secondary", use_container_width=True, key="filter_etf_all"):
-        st.session_state.etf_category_filter = "全部"
-        st.rerun()
-    if f2.button("市值型", type="primary" if st.session_state.etf_category_filter == "市值型" else "secondary", use_container_width=True, key="filter_etf_cap"):
-        st.session_state.etf_category_filter = "市值型"
-        st.rerun()
-    if f3.button("高股息", type="primary" if st.session_state.etf_category_filter == "高股息" else "secondary", use_container_width=True, key="filter_etf_div"):
-        st.session_state.etf_category_filter = "高股息"
-        st.rerun()
-    if f4.button("海外/債", type="primary" if st.session_state.etf_category_filter == "海外/債券" else "secondary", use_container_width=True, key="filter_etf_overseas"):
-        st.session_state.etf_category_filter = "海外/債券"
-        st.rerun()
+    # 分類篩選按鈕 (改為 2x2 避免擠壓溢出)
+    f_r1_c1, f_r1_c2 = st.columns(2)
+    with f_r1_c1:
+        if st.button("🔥 全部熱門", type="primary" if st.session_state.etf_category_filter == "全部" else "secondary", use_container_width=True, key="filter_etf_all"):
+            st.session_state.etf_category_filter = "全部"
+            st.rerun()
+    with f_r1_c2:
+        if st.button("📈 市值型", type="primary" if st.session_state.etf_category_filter == "市值型" else "secondary", use_container_width=True, key="filter_etf_cap"):
+            st.session_state.etf_category_filter = "市值型"
+            st.rerun()
+
+    f_r2_c1, f_r2_c2 = st.columns(2)
+    with f_r2_c1:
+        if st.button("💰 高股息", type="primary" if st.session_state.etf_category_filter == "高股息" else "secondary", use_container_width=True, key="filter_etf_div"):
+            st.session_state.etf_category_filter = "高股息"
+            st.rerun()
+    with f_r2_c2:
+        if st.button("🌐 海外/債券", type="primary" if st.session_state.etf_category_filter == "海外/債券" else "secondary", use_container_width=True, key="filter_etf_overseas"):
+            st.session_state.etf_category_filter = "海外/債券"
+            st.rerun()
 
     if st.button("⚡ 開始全維度即時掃描排行", type="primary", use_container_width=True, key="etf_scan_exec_btn"):
         if st.session_state.etf_category_filter == "市值型":
@@ -1267,7 +1312,6 @@ elif st.session_state.main_mode == "etf":
                     c_m3.caption(f"防守: **{row['建議防守']:.2f}**")
                     st.write("---")
 
-        # P1-7: 透明展示未成功標的
         if failed_etfs:
             with st.expander("⚠️ 部分 ETF 連線未成功清單", expanded=False):
                 for err in failed_etfs:
@@ -1283,7 +1327,7 @@ elif st.session_state.main_mode == "etf":
         else:
             st.info(f"🎯 維持標準扣款 **{int(etf_cap):,} 元**")
 
-# ================= 模式 3：⚡ 期貨與美台跨市場連動 (P1-6: 期現貨日期同步檢驗) =================
+# ================= 模式 3：⚡ 期貨與美台跨市場連動 =================
 elif st.session_state.main_mode == "futures":
     st.subheader("⚡ 期貨與美台跨市場連動核心")
 
@@ -1314,7 +1358,6 @@ elif st.session_state.main_mode == "futures":
     st.write("---")
 
     st.markdown("### 📊 台指期 (WTX) 與現貨基差 (Basis)")
-    # P1-6: 跨市場時間一致性校驗
     if df_market is not None and df_futures is not None:
         twii_close = df_market.iloc[-1]['Close']
         fut_close = df_futures.iloc[-1]['Close']
@@ -1362,7 +1405,7 @@ elif st.session_state.main_mode == "futures":
             st.caption(f"結構：`{status}`")
             st.write("---")
 
-# ================= 模式 4：💎 體質績優雷達 (P1-7: 錯誤透明反饋) =================
+# ================= 模式 4：💎 體質績優雷達 =================
 elif st.session_state.main_mode == "market":
     st.subheader("💎 市場穩健優質標的・即時連線掃描")
 
@@ -1438,7 +1481,7 @@ elif st.session_state.main_mode == "market":
 elif st.session_state.main_mode == "events":
     st.subheader("📢 重要法說會日程 ＆ 即時重大訊息速查")
 
-    col_n_input, col_n_btn = st.columns([2.6, 1.4])
+    col_n_input, col_n_btn = st.columns([2.4, 1.6])
     with col_n_input:
         news_ticker = st.text_input("輸入查詢標的代碼", value="2330.TW", label_visibility="collapsed", key="news_search_input")
     with col_n_btn:
