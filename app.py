@@ -364,6 +364,7 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
 
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
 
+        # 台股個股限定：整合 TWSE 盤中撮合
         if (".TW" in ticker.upper() or ".TWO" in ticker.upper()) and not ticker.endswith("=F"):
             twse_live = fetch_twse_realtime(ticker)
             if twse_live and twse_live["match_price"] > 0:
@@ -580,6 +581,64 @@ def fetch_fundamentals(ticker: str):
             "debt_ratio": None,
             "reasons": ["⚠️ 基本面連線逾時，未計入基本面評分"]
         }
+
+# ----------------- 開盤即時與均線分析 (全域獨立函式) -----------------
+def analyze_opening_and_ma(df_stock, live_info=None):
+    if df_stock is None or len(df_stock) == 0:
+        return {}, "資料不足", 0, 0.0, 0.0, "⚪ 無資料", ["資料不足"]
+
+    last = df_stock.iloc[-1]
+    prev = df_stock.iloc[-2] if len(df_stock) >= 2 else last
+    close = safe_float(last['Close'])
+    ma5 = safe_float(last['MA5'], close)
+    ma20 = safe_float(last['MA20'], close)
+    ma60 = safe_float(last['MA60'], close)
+
+    ma_status = {
+        "ma5_diff": ((close - ma5) / (ma5 + 1e-9)) * 100,
+        "ma20_diff": ((close - ma20) / (ma20 + 1e-9)) * 100,
+        "ma60_diff": ((close - ma60) / (ma60 + 1e-9)) * 100,
+        "ma5_val": ma5,
+        "ma20_val": ma20,
+        "ma60_val": ma60
+    }
+
+    if close > ma5 > ma20 > ma60:
+        ma_alignment = "🔥 完美多頭排列 (價格 > 日線 > 月線 > 季線)"
+        ma_score = 25
+    elif close > ma20 and ma20 > ma60:
+        ma_alignment = "📈 中長線偏多架構 (守穩月線與季線)"
+        ma_score = 18
+    elif close < ma5 < ma20 < ma60:
+        ma_alignment = "❄️ 完全空頭排列 (價格被所有均線下壓)"
+        ma_score = 0
+    else:
+        ma_alignment = "🔄 均線震盪糾結 (多空方向待表態)"
+        ma_score = 10
+
+    open_p = safe_float(last['Open'], close)
+    prev_close = safe_float(prev['Close'], close)
+    gap_pct = ((open_p - prev_close) / (prev_close + 1e-9)) * 100
+    intraday_pct = ((close - open_p) / (open_p + 1e-9)) * 100
+
+    opening_diag = []
+    if gap_pct >= 1.0:
+        opening_diag.append(f"強勢跳空開高 (+{gap_pct:.2f}%)，多方意圖明確。")
+    elif gap_pct <= -1.0:
+        opening_diag.append(f"弱勢跳空開低 ({gap_pct:.2f}%)，下檔承接力道待觀察。")
+    else:
+        opening_diag.append(f"平盤附近開出 ({gap_pct:+.2f}%)，由盤中量能決定方向。")
+
+    if close > open_p:
+        k_type = "🔴 盤中實體紅 K (開低走高或強開強走)"
+        opening_diag.append("多方持續推進，買盤居主導地位。")
+    elif close < open_p:
+        k_type = "🟢 盤中實體黑 K (開高走低或弱勢下殺)"
+        opening_diag.append("需留意盤中逢高調節或避險賣壓。")
+    else:
+        k_type = "⚪ 盤中十字星 (多空平手拉鋸)"
+
+    return ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag
 
 # ----------------- 歷史回測引擎 -----------------
 def backtest_strategy(df_stock, market_type="tw"):
@@ -1251,8 +1310,8 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
             else:
                 loss_per_unit = risk_unit * 1000.0
                 risk_based_pos = int(max_risk_dollar // loss_per_unit) if loss_per_unit > 0 else 0
-                capital_max_pos = int(total_capital // (res['close'] * 1000.0)) if res['close'] > 0 else 0
-                suggested_pos = min(risk_based_pos, capital_max_pos)
+                capital_max_lots = int(total_capital // (res['close'] * 1000.0)) if res['close'] > 0 else 0
+                suggested_pos = min(risk_based_pos, capital_max_lots)
 
             potential_reward = max(res['target_60d'] - res['close'], 0)
             rr_ratio = potential_reward / risk_unit if risk_unit > 0 else 0
@@ -1379,12 +1438,12 @@ elif st.session_state.main_mode == "us_stock":
         r_us, df_stk_us = st.session_state.analysis_cache_us
         render_analysis_view(r_us, df_stk_us, mode_type="us")
 
-# ================= 模式 3：🇹🇼 台灣期貨 (智慧路由・徹底解決 404 報錯) =================
+# ================= 模式 3：🇹🇼 台灣期貨 (智慧路由修復版) =================
 elif st.session_state.main_mode == "tw_futures":
     st.subheader("🇹🇼 台灣期貨全維度專區 (優質契約・期顧共識・基差診斷)")
     st.caption("內建熱門台期契約池・自選查詢・多空目標壓力與保證金風控")
 
-    # 1. 快捷商品切換 (2x2 雙欄大卡片)
+    # 1. 快捷商品切換
     fq1, fq2 = st.columns(2)
     with fq1:
         if st.button("台指期 (大台)", use_container_width=True, key="fq_wtx"):
@@ -1405,7 +1464,7 @@ elif st.session_state.main_mode == "tw_futures":
             st.session_state.analysis_cache_fut = None
             st.rerun()
 
-    # 2. 智慧輸入框：直接支援中文或乾淨代碼 (WTX, MTX, WMT, TE, TF)
+    # 2. 智慧輸入框
     col_f_in, col_f_btn = st.columns([2.4, 1.6])
     with col_f_in:
         raw_fut_input = st.text_input(
@@ -1417,7 +1476,7 @@ elif st.session_state.main_mode == "tw_futures":
     with col_f_btn:
         exec_fut_btn = st.button("🚀 診斷期貨", type="primary", use_container_width=True, key="run_fut_btn")
 
-    # 3. 獨立基差即時看板 (嚴格防偽：有真實獨立期貨報價才算基差)
+    # 3. 獨立基差即時看板
     if df_market is not None and df_futures_bench is not None:
         twii_close = df_market.iloc[-1]['Close']
         bench_fut_close = df_futures_bench.iloc[-1]['Close']
@@ -1436,17 +1495,15 @@ elif st.session_state.main_mode == "tw_futures":
     else:
         st.caption("⚪ 基差提示：外部資料庫目前未提供獨立 TAIFEX 撮合報價，已嚴格停用假基差計算。")
 
-    # 4. 智慧路由運算 (解決 WMT=F 報錯核心)
+    # 4. 智慧路由運算
     clean_key = raw_fut_input.strip().upper().replace("=F", "")
     spec_info = TW_FUTURES_SPECS.get(clean_key, TW_FUTURES_SPECS["WTX"])
 
     if exec_fut_btn or st.session_state.analysis_cache_fut is None:
         with st.spinner("連線期貨點位與期顧模型中..."):
-            # 優先嘗試期貨主力合約
             df_target_fut = fetch_and_calc("WTX=F")
             fallback_note = None
 
-            # 若外部資料庫對 WTX=F 回傳空值，自動以加權指數底層走勢 (^TWII) 作為均線與 ATR 的客觀參考
             if df_target_fut is None or df_target_fut.empty:
                 df_target_fut = df_market
                 fallback_note = f"📌 **行情資料來源提示**：外部資料庫未提供此期貨即時報價，走勢與均線位階參考加權指數標的；風控與下單已精確套用【{spec_info['name']}】契約規格（每點 {spec_info['tick_value']} 元、保證金 {spec_info['initial_margin']:,} 元）。"
@@ -1458,7 +1515,7 @@ elif st.session_state.main_mode == "tw_futures":
                 st.session_state.analysis_cache_fut = None
                 st.error("暫時無法取得台股指數基準行情，請稍後再試。")
 
-    # 5. 全維度同規格渲染 (絕不噴紅字錯誤)
+    # 5. 全維度同規格渲染
     if st.session_state.analysis_cache_fut is not None:
         r_fut, df_fut_obj, spec_obj, fb_msg = st.session_state.analysis_cache_fut
         render_analysis_view(r_fut, df_fut_obj, mode_type="futures", custom_spec=spec_obj, fallback_warning=fb_msg)
