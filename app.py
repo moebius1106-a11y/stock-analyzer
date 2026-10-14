@@ -88,7 +88,7 @@ st.markdown("""
         min-width: 0 !important;
         max-width: 100% !important;
     }
-    div.stButton > button {
+    div.stButton > button, div[data-testid="stFormSubmitButton"] > button {
         width: 100% !important;
         min-width: 0 !important;
         max-width: 100% !important;
@@ -227,31 +227,35 @@ if "authenticated" not in st.session_state:
 if "current_user" not in st.session_state:
     st.session_state.current_user = "預設操盤手"
 
+# 登入頁面：使用 st.form 封裝，手機鍵盤按「Enter / 前往」直接驗證登入
 if not st.session_state.authenticated:
     st.title("🔐 內部量化決策系統")
     st.caption("請輸入您的「專屬使用者代號／暱稱」與「訪問密碼」以啟動個人獨立記憶空間")
-    user_id_input = st.text_input("👤 使用者代號 / 暱稱（不同人將自動分開記錄自選股與資金設定）", value="", placeholder="例：Alex、王董、VIP01", key="login_user_id")
-    pwd = st.text_input("🔑 訪問密碼", type="password", key="login_pwd")
+    
+    with st.form("login_form", clear_on_submit=False):
+        user_id_input = st.text_input("👤 使用者代號 / 暱稱（不同人將自動分開記錄自選股與資金設定）", value="", placeholder="例：Alex、王董、VIP01", key="login_user_id")
+        pwd = st.text_input("🔑 訪問密碼", type="password", key="login_pwd")
+        login_btn = st.form_submit_button("🔓 登入個人決策空間", type="primary", use_container_width=True)
 
-    if st.button("🔓 登入個人決策空間", type="primary", use_container_width=True, key="login_btn"):
-        clean_uid = user_id_input.strip() if user_id_input.strip() else "預設操盤手"
-        is_valid = False
-        if clean_uid in CUSTOM_USERS_DICT and pwd == str(CUSTOM_USERS_DICT[clean_uid]):
-            is_valid = True
-        elif ACCESS_PASSWORD is not None and pwd == str(ACCESS_PASSWORD):
-            is_valid = True
+        if login_btn:
+            clean_uid = user_id_input.strip() if user_id_input.strip() else "預設操盤手"
+            is_valid = False
+            if clean_uid in CUSTOM_USERS_DICT and pwd == str(CUSTOM_USERS_DICT[clean_uid]):
+                is_valid = True
+            elif ACCESS_PASSWORD is not None and pwd == str(ACCESS_PASSWORD):
+                is_valid = True
 
-        if is_valid:
-            st.session_state.authenticated = True
-            st.session_state.current_user = clean_uid
-            if "user_data" in st.session_state:
-                del st.session_state["user_data"]
-            st.rerun()
-        else:
-            st.error("密碼錯誤或使用者代號未授權，請重新輸入。")
+            if is_valid:
+                st.session_state.authenticated = True
+                st.session_state.current_user = clean_uid
+                if "user_data" in st.session_state:
+                    del st.session_state["user_data"]
+                st.rerun()
+            else:
+                st.error("密碼錯誤或使用者代號未授權，請重新輸入。")
     st.stop()
 
-# ----------------- 全市場股票中文名稱對照字典 (執行緒安全共享字典) -----------------
+# ----------------- 全市場股票中文名稱對照字典 -----------------
 GLOBAL_STOCK_NAMES = {
     "2330.TW": "台積電", "2330": "台積電",
     "2317.TW": "鴻海", "2317": "鴻海",
@@ -319,7 +323,7 @@ def get_stock_display_label(ticker: str, is_fav=False):
         return f"{prefix}{name} ({clean_code})"
     return f"{prefix}{clean_code}"
 
-# ----------------- V9.1 多使用者分流記憶引擎 -----------------
+# ----------------- 多使用者分流記憶引擎 -----------------
 PROFILES_FILE = "user_profiles.json"
 LEGACY_HISTORY_FILE = "user_history.json"
 
@@ -521,7 +525,7 @@ def normalize_ticker(ticker: str):
         return t[:-3], "tse"
     return t, "us"
 
-# ----------------- ★ 防卡死核心：共享單次 Yahoo Info 帶逾時保護快取 -----------------
+# ----------------- 防卡死核心：共享單次 Yahoo Info 帶逾時保護快取 -----------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_yf_shared_info(ticker: str):
     def _worker():
@@ -907,7 +911,7 @@ def fetch_bot_forex():
         pass
     return None
 
-# ----------------- 權威 API 3：機構分析師評等與目標價 (共用快取) -----------------
+# ----------------- 權威 API 3：機構分析師評等與目標價 -----------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_analyst_consensus(ticker: str):
     try:
@@ -957,7 +961,7 @@ def fetch_analyst_consensus(ticker: str):
             "opinions": 0
         }
 
-# ----------------- 權威 API 4：四大華爾街級機構研究套件 (共用快取 + 防卡死逾時保護) -----------------
+# ----------------- 權威 API 4：四大華爾街級機構研究套件 -----------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_institutional_research_suite(ticker: str):
     clean_code, market = normalize_ticker(ticker)
@@ -969,7 +973,6 @@ def fetch_institutional_research_suite(ticker: str):
         if not info:
             return {"has_suite": False}
 
-        # 1. Financial Analysis (財務分析：三率、現金流、償債與資產報酬)
         gross_margin = safe_float(info.get("grossMargins"), None)
         op_margin = safe_float(info.get("operatingMargins"), None)
         profit_margin = safe_float(info.get("profitMargins"), None)
@@ -983,7 +986,6 @@ def fetch_institutional_research_suite(ticker: str):
         total_cash = safe_float(info.get("totalCash"), None)
         total_debt = safe_float(info.get("totalDebt"), None)
 
-        # 2. Equity Research (股票研究：多維估值模型、PEG、EV/EBITDA、內在價值位階)
         trailing_pe = safe_float(info.get("trailingPE"), None)
         forward_pe = safe_float(info.get("forwardPE"), None)
         pb_ratio = safe_float(info.get("priceToBook"), None)
@@ -994,7 +996,6 @@ def fetch_institutional_research_suite(ticker: str):
         payout_ratio = safe_float(info.get("payoutRatio"), None)
         book_val = safe_float(info.get("bookValue"), None)
 
-        # 3. Earnings Reviewer (財報分析：營收成長、EPS 動能、歷史財報 Beat/Miss 驚奇度)
         rev_growth = safe_float(info.get("revenueGrowth"), None)
         earn_growth = safe_float(info.get("earningsGrowth"), None)
         q_earn_growth = safe_float(info.get("earningsQuarterlyGrowth"), None)
@@ -1021,7 +1022,6 @@ def fetch_institutional_research_suite(ticker: str):
                     "結果": "🟢 超預期 (Beat)" if (surp_pct is not None and surp_pct > 0) else ("🔴 低於預期 (Miss)" if (surp_pct is not None and surp_pct < 0) else "⚪ 符合預期")
                 })
 
-        # 4. Market Researcher (市場研究：產業地位、市值、機構/外資籌碼、52週高低位階)
         sector = info.get("sector") or info.get("category") or "核心產業"
         industry = info.get("industry") or "指標企業"
         mkt_cap = safe_float(info.get("marketCap"), None)
@@ -1235,7 +1235,7 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
     except Exception:
         return None
 
-# ----------------- 基本面與 ETF 數據 (共用快取) -----------------
+# ----------------- 基本面與 ETF 數據 -----------------
 @st.cache_data(ttl=7200, show_spinner=False)
 def fetch_fundamentals(ticker: str):
     clean_code, market = normalize_ticker(ticker)
@@ -1244,7 +1244,6 @@ def fetch_fundamentals(ticker: str):
 
     try:
         info = fetch_yf_shared_info(ticker)
-
         is_etf = info.get('quoteType') == 'ETF' or clean_code.startswith(('00', '01'))
 
         if is_etf:
@@ -1596,7 +1595,7 @@ def analyze_forex_data():
 
     return res
 
-# ----------------- 全域基準指數平行預載引擎 (消除啟動阻塞) -----------------
+# ----------------- 全域基準指數平行預載引擎 -----------------
 @st.cache_data(ttl=120, show_spinner=False)
 def preload_global_benchmarks():
     tickers = ["^TWII", "WTX=F", "TSM", "^SOX", "^GSPC"]
@@ -1653,7 +1652,6 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
         except Exception:
             global_score += 8
 
-    # 計算相對大盤超額報酬 (Alpha)
     rel_alpha_20d = 0.0
     rel_alpha_60d = 0.0
     if df_market is not None and len(df_market) >= 21 and len(df_stock) >= 21:
@@ -1884,16 +1882,29 @@ EARNINGS_CALLS = [
 # ----------------- 狀態初始化 -----------------
 if "main_mode" not in st.session_state:
     st.session_state.main_mode = "live_watch"
+
 if "selected_tw_ticker" not in st.session_state:
     st.session_state.selected_tw_ticker = "2330.TW"
+if "tw_ticker_field" not in st.session_state:
+    st.session_state.tw_ticker_field = "2330.TW"
+
 if "selected_us_ticker" not in st.session_state:
     st.session_state.selected_us_ticker = "NVDA"
+if "us_ticker_field" not in st.session_state:
+    st.session_state.us_ticker_field = "NVDA"
+
 if "selected_fut_contract" not in st.session_state:
     st.session_state.selected_fut_contract = "WTX"
+if "tw_fut_field" not in st.session_state:
+    st.session_state.tw_fut_field = "WTX"
+
 if "auto_run_tw" not in st.session_state:
     st.session_state.auto_run_tw = False
 if "auto_run_us" not in st.session_state:
     st.session_state.auto_run_us = False
+if "auto_run_fut" not in st.session_state:
+    st.session_state.auto_run_fut = False
+
 if "analysis_cache_tw" not in st.session_state:
     st.session_state.analysis_cache_tw = None
 if "analysis_cache_us" not in st.session_state:
@@ -1969,17 +1980,14 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與版
 
     ---
     ### 🛠️ 核心功能模組總覽
-    1. **🏛️ 四大華爾街級權威機構深度研究套件（V9.1 極速防卡死版）**：
+    1. **🏛️ 四大華爾街級權威機構深度研究套件（V9.2 直覺即時連動版）**：
        - **Financial Analysis（財務分析）**：三率結構（毛利率/營益率/淨利率）、ROE/ROA、流動比/速動比、負債權益比、營業與自由現金流診斷。
        - **Equity Research（股票研究）**：Trailing/Forward PE、P/B、P/S、PEG 成長估值比、EV/EBITDA 倍數與機構共識目標價位階。
        - **Earnings Reviewer（財報分析）**：季度營收年增率 (YoY)、EPS 盈餘成長動能、近四季財報驚奇度 (Earnings Surprise Beat/Miss) 完整紀錄。
        - **Market Researcher（市場研究）**：產業板塊定位、總市值規模、外資/機構持股籌碼比例、52 週高低位階與相對大盤超額報酬 (Alpha)，並支援**一鍵匯出完整機構研究報告**。
-    2. **🔥 關鍵市場戰情焦點導入 ＆ 即時總經外電快訊（V8.0）**：
-       - 置頂首席戰情公告欄與 Google 財經外電 RSS 即時引擎。
-    3. **👤 多使用者獨立記憶分流系統（V8.0）**：
-       - 每位使用者獨立保存常用清單、查詢紀錄、預設本金、風險比例與看盤筆記。
-    4. **📺 大盤與個股即時分時看盤室（V7.0）**：
-       - Yahoo 股市級別即時分時走勢圖（含昨收平盤基準線、紅綠成交量柱）、大盤委買賣統計看板與個股五檔掛單明細。
+    2. **🚀 原生表單即時觸發與 Enter 自動跳轉**：
+       - 登入、台股、美股與期貨皆採用原生 `st.form` 封裝，手機鍵盤按下「Enter / 前往」即可秒送出。
+       - 點選任何「常用股票」或「最近查詢」按鈕，立即自動更新輸入框內容並完成 1 秒自動跳轉診斷。
     """)
 
 # 🔥 置頂關鍵市場戰情焦點廣播卡
@@ -2049,7 +2057,7 @@ with r4_c2:
 
 st.write("")
 
-# 全域平行預載（高速不阻塞）
+# 全域平行預載
 bench_dict = preload_global_benchmarks()
 df_market = bench_dict.get("^TWII")
 df_futures_bench = bench_dict.get("WTX=F")
@@ -2058,7 +2066,7 @@ df_sox = bench_dict.get("^SOX")
 df_spx = bench_dict.get("^GSPC")
 global_forex = analyze_forex_data()
 
-# ================= 四大權威機構研究報告渲染器 (V9.1 極速防卡死版) =================
+# ================= 四大權威機構研究報告渲染器 =================
 def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
     suite = res.get("inst_suite", {})
     if not suite or not suite.get("has_suite"):
@@ -2083,7 +2091,6 @@ def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
             "📥 完整報告"
         ])
 
-        # Tab 1: Financial Analysis (財務分析)
         with tab_fa:
             st.markdown("#### 📊 Financial Analysis（企業財務結構與現金流護城河）")
             fa_c1, fa_c2, fa_c3 = st.columns(3)
@@ -2110,7 +2117,6 @@ def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
             </div>
             """, unsafe_allow_html=True)
 
-        # Tab 2: Equity Research (股票研究)
         with tab_eq:
             st.markdown("#### 📑 Equity Research（機構估值模型與目標位階研究）")
             eq_c1, eq_c2, eq_c3 = st.columns(3)
@@ -2143,7 +2149,6 @@ def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
             </div>
             """, unsafe_allow_html=True)
 
-        # Tab 3: Earnings Reviewer (財報分析)
         with tab_er:
             st.markdown("#### 📈 Earnings Reviewer（季度財報成長動能與盈餘驚奇度）")
             er_c1, er_c2, er_c3 = st.columns(3)
@@ -2163,7 +2168,6 @@ def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
             else:
                 st.info("💡 該標的目前無歷史季度 EPS Surprise 明細表，請參考上方營收與盈餘年增率指標。")
 
-        # Tab 4: Market Researcher (市場研究)
         with tab_mr:
             st.markdown("#### 🌐 Market Researcher（產業地位、機構籌碼與市場相對強度）")
             mr_c1, mr_c2, mr_c3 = st.columns(3)
@@ -2195,7 +2199,6 @@ def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
                 with st.expander("📖 查看企業核心業務與全球競爭護城河簡介", expanded=False):
                     st.write(mkt["summary_text"])
 
-        # Tab 5: 一鍵匯出完整機構級研究報告
         with tab_export:
             st.markdown("#### 📥 完整機構級四維度投研報告（可直接複製或下載存檔）")
             report_md = f"""# 🏛️ 【{disp_name}】機構級四維度深度研究報告
@@ -2232,7 +2235,7 @@ def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
                 key=f"dl_rep_{ticker_raw}_{mode_type}"
             )
 
-# ================= 模組共用渲染器 (放置於所有 if/elif 之前，確保語法鏈完整) =================
+# ================= 模組共用渲染器 =================
 def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallback_warning=None, ticker_raw=None):
     is_downtrend = res.get('is_breakdown', False) or (res['close'] < res['ma_status']['ma20_val'])
     risk_unit = max(res['close'] - res['stop_loss'], res['close'] * 0.015)
@@ -2321,7 +2324,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
                 """
             st.markdown(f"<div class='yahoo-stat-box'>{rows_html}</div>", unsafe_allow_html=True)
 
-    # ★ 四大華爾街級權威機構深度研究報告 (針對台股與美股自動展開)
+    # 四大華爾街級權威機構深度研究報告
     if mode_type in ("tw", "us"):
         render_institutional_research_panel(res, ticker_raw, mode_type=mode_type)
 
@@ -2533,10 +2536,8 @@ if st.session_state.main_mode == "live_watch":
         fetch_live_macro_rss.clear()
         st.rerun()
 
-    # 1. 渲染即時分時走勢圖
     render_intraday_chart_widget("^TWII", title_name="加權指數 (^TWII)")
 
-    # 2. 渲染 Yahoo 股市風格大盤統計明細表
     st.markdown("### 📊 大盤即時委買委賣與漲跌家數統計")
 
     tw_cls = "tw-up" if dash["twii_chg"] > 0 else ("tw-down" if dash["twii_chg"] < 0 else "tw-flat")
@@ -2647,6 +2648,16 @@ if st.session_state.main_mode == "live_watch":
 elif st.session_state.main_mode == "tw_stock":
     st.subheader(f"🔍 台股全維度深度體檢（👤 {st.session_state.current_user}）")
 
+    # 快捷切換輔助函式：同步修改文字輸入框 SessionState，確保按鈕直覺秒跳轉
+    def set_and_jump_tw_ticker(target_code: str):
+        clean_code = target_code.strip().upper()
+        if clean_code.isdigit():
+            clean_code += ".TW"
+        st.session_state.tw_ticker_field = clean_code
+        st.session_state.selected_tw_ticker = clean_code
+        st.session_state.analysis_cache_tw = None
+        st.session_state.auto_run_tw = True
+
     tw_favs = user_memory.get("tw_favorites", ["2330.TW", "2454.TW", "2317.TW", "0050.TW"])
     st.caption(f"⭐ **【{st.session_state.current_user}】的常用股票清單**（點選一秒自動診斷）：")
 
@@ -2655,9 +2666,7 @@ elif st.session_state.main_mode == "tw_stock":
         col_target = fav_cols[idx % 2]
         display_label = get_stock_display_label(fav_code, is_fav=True)
         if col_target.button(display_label, use_container_width=True, key=f"tw_fav_{fav_code}"):
-            st.session_state.selected_tw_ticker = fav_code
-            st.session_state.analysis_cache_tw = None
-            st.session_state.auto_run_tw = True
+            set_and_jump_tw_ticker(fav_code)
             st.rerun()
 
     tw_recents = [r for r in user_memory.get("tw_recent", []) if r not in tw_favs][:4]
@@ -2668,24 +2677,24 @@ elif st.session_state.main_mode == "tw_stock":
             col_rec_target = rec_cols[r_idx % 2]
             rec_display = get_stock_display_label(r_code, is_fav=False)
             if col_rec_target.button(rec_display, use_container_width=True, key=f"tw_rec_{r_code}"):
-                st.session_state.selected_tw_ticker = r_code
-                st.session_state.analysis_cache_tw = None
-                st.session_state.auto_run_tw = True
+                set_and_jump_tw_ticker(r_code)
                 st.rerun()
 
     st.caption("💡 **台股輸入格式指引**：上市請輸入 `代碼.TW`（如 `2330.TW`，亦支援純數字如 `2330` 自動轉上市）｜ 上櫃請輸入 `代碼.TWO`（如 `6488.TWO`）")
 
-    col_input, col_btn = st.columns([2.4, 1.6])
-    with col_input:
-        raw_tw_input = st.text_input(
-            "輸入台股代碼",
-            value=st.session_state.selected_tw_ticker,
-            label_visibility="collapsed",
-            placeholder="例：2330.TW 或 6488.TWO",
-            key="tw_ticker_field"
-        )
-    with col_btn:
-        exec_clicked = st.button("🚀 診斷台股", type="primary", use_container_width=True, key="run_tw_btn")
+    # 原生 Form 表單：手機鍵盤按「Enter / 前往」立即自動診斷
+    with st.form("tw_search_form", clear_on_submit=False):
+        col_input, col_btn = st.columns([2.4, 1.6])
+        with col_input:
+            raw_tw_input = st.text_input(
+                "輸入台股代碼",
+                value=st.session_state.tw_ticker_field,
+                label_visibility="collapsed",
+                placeholder="例：2330.TW 或 6488.TWO",
+                key="tw_ticker_field"
+            )
+        with col_btn:
+            exec_clicked = st.form_submit_button("🚀 診斷台股", type="primary", use_container_width=True)
 
     with st.expander(f"⚙️ 管理【{st.session_state.current_user}】的台股常用清單", expanded=False):
         col_m1, col_m2 = st.columns([2.4, 1.6])
@@ -2715,6 +2724,7 @@ elif st.session_state.main_mode == "tw_stock":
 
     if exec_clicked or st.session_state.auto_run_tw:
         st.session_state.auto_run_tw = False
+        st.session_state.selected_tw_ticker = cleaned_tw_ticker
         with st.spinner("連線 TWSE 撮合主機與四大權威機構資料庫計算中..."):
             df_stk = fetch_and_calc(cleaned_tw_ticker)
             if df_stk is not None:
@@ -2733,6 +2743,13 @@ elif st.session_state.main_mode == "tw_stock":
 elif st.session_state.main_mode == "us_stock":
     st.subheader(f"🇺🇸 美股全維度深度體檢（👤 {st.session_state.current_user}）")
 
+    def set_and_jump_us_ticker(target_code: str):
+        clean_code = target_code.strip().upper()
+        st.session_state.us_ticker_field = clean_code
+        st.session_state.selected_us_ticker = clean_code
+        st.session_state.analysis_cache_us = None
+        st.session_state.auto_run_us = True
+
     us_favs = user_memory.get("us_favorites", ["NVDA", "AAPL", "MSFT", "TSLA"])
     st.caption(f"⭐ **【{st.session_state.current_user}】的常用美股清單**（點選一秒自動診斷）：")
 
@@ -2741,9 +2758,7 @@ elif st.session_state.main_mode == "us_stock":
         col_u_target = fav_u_cols[idx % 2]
         display_u_label = get_stock_display_label(fav_u_code, is_fav=True)
         if col_u_target.button(display_u_label, use_container_width=True, key=f"us_fav_{fav_u_code}"):
-            st.session_state.selected_us_ticker = fav_u_code
-            st.session_state.analysis_cache_us = None
-            st.session_state.auto_run_us = True
+            set_and_jump_us_ticker(fav_u_code)
             st.rerun()
 
     us_recents = [r for r in user_memory.get("us_recent", []) if r not in us_favs][:4]
@@ -2754,24 +2769,23 @@ elif st.session_state.main_mode == "us_stock":
             col_rec_u = rec_u_cols[ru_idx % 2]
             rec_u_label = get_stock_display_label(ru_code, is_fav=False)
             if col_rec_u.button(rec_u_label, use_container_width=True, key=f"us_rec_{ru_code}"):
-                st.session_state.selected_us_ticker = ru_code
-                st.session_state.analysis_cache_us = None
-                st.session_state.auto_run_us = True
+                set_and_jump_us_ticker(ru_code)
                 st.rerun()
 
     st.caption("💡 **美股輸入格式指引**：請輸入美股英文代號（如 `NVDA`、`AAPL`、`TSLA`、`MSFT`、`TSM`），大小寫皆可自動識別轉換。")
 
-    col_u_in, col_u_btn = st.columns([2.4, 1.6])
-    with col_u_in:
-        raw_us_input = st.text_input(
-            "輸入美股代碼",
-            value=st.session_state.selected_us_ticker,
-            label_visibility="collapsed",
-            placeholder="例：NVDA、AAPL、TSM",
-            key="us_ticker_field"
-        )
-    with col_u_btn:
-        exec_us_btn = st.button("🚀 診斷美股", type="primary", use_container_width=True, key="run_us_btn")
+    with st.form("us_search_form", clear_on_submit=False):
+        col_u_in, col_u_btn = st.columns([2.4, 1.6])
+        with col_u_in:
+            raw_us_input = st.text_input(
+                "輸入美股代碼",
+                value=st.session_state.us_ticker_field,
+                label_visibility="collapsed",
+                placeholder="例：NVDA、AAPL、TSM",
+                key="us_ticker_field"
+            )
+        with col_u_btn:
+            exec_us_btn = st.form_submit_button("🚀 診斷美股", type="primary", use_container_width=True)
 
     cleaned_us_ticker = raw_us_input.strip().upper()
 
@@ -2796,6 +2810,7 @@ elif st.session_state.main_mode == "us_stock":
 
     if exec_us_btn or st.session_state.auto_run_us:
         st.session_state.auto_run_us = False
+        st.session_state.selected_us_ticker = cleaned_us_ticker
         with st.spinner("連線美股即時行情與華爾街四大研究資料庫中..."):
             df_stk_us = fetch_and_calc(cleaned_us_ticker)
             if df_stk_us is not None:
@@ -2815,39 +2830,43 @@ elif st.session_state.main_mode == "tw_futures":
     st.subheader("⚡ 台灣期貨全維度專區 (優質契約・期顧共識・基差診斷)")
     st.caption("內建熱門台期契約池・自選查詢・多空目標壓力與保證金風控")
 
+    def set_and_jump_fut_contract(contract_key: str):
+        c_code = contract_key.strip().upper()
+        st.session_state.tw_fut_field = c_code
+        st.session_state.selected_fut_contract = c_code
+        st.session_state.analysis_cache_fut = None
+        st.session_state.auto_run_fut = True
+
     fq1, fq2 = st.columns(2)
     with fq1:
         if st.button("台指期 (大台)", use_container_width=True, key="fq_wtx"):
-            st.session_state.selected_fut_contract = "WTX"
-            st.session_state.analysis_cache_fut = None
+            set_and_jump_fut_contract("WTX")
             st.rerun()
         if st.button("微型台指 (微台)", use_container_width=True, key="fq_wmt"):
-            st.session_state.selected_fut_contract = "WMT"
-            st.session_state.analysis_cache_fut = None
+            set_and_jump_fut_contract("WMT")
             st.rerun()
     with fq2:
         if st.button("小型台指 (小台)", use_container_width=True, key="fq_mtx"):
-            st.session_state.selected_fut_contract = "MTX"
-            st.session_state.analysis_cache_fut = None
+            set_and_jump_fut_contract("MTX")
             st.rerun()
         if st.button("電子期貨 (TE)", use_container_width=True, key="fq_te"):
-            st.session_state.selected_fut_contract = "TE"
-            st.session_state.analysis_cache_fut = None
+            set_and_jump_fut_contract("TE")
             st.rerun()
 
     st.caption("💡 **期貨輸入格式指引**：可點選上方按鈕或輸入契約簡稱（`WTX` 大台、`MTX` 小台、`WMT` 微台、`TE` 電子期、`TF` 金融期）。")
 
-    col_f_in, col_f_btn = st.columns([2.4, 1.6])
-    with col_f_in:
-        raw_fut_input = st.text_input(
-            "輸入契約代碼",
-            value=st.session_state.selected_fut_contract,
-            label_visibility="collapsed",
-            placeholder="例：WTX、MTX、WMT",
-            key="tw_fut_field"
-        )
-    with col_f_btn:
-        exec_fut_btn = st.button("🚀 診斷期貨", type="primary", use_container_width=True, key="run_fut_btn")
+    with st.form("fut_search_form", clear_on_submit=False):
+        col_f_in, col_f_btn = st.columns([2.4, 1.6])
+        with col_f_in:
+            raw_fut_input = st.text_input(
+                "輸入契約代碼",
+                value=st.session_state.tw_fut_field,
+                label_visibility="collapsed",
+                placeholder="例：WTX、MTX、WMT",
+                key="tw_fut_field"
+            )
+        with col_f_btn:
+            exec_fut_btn = st.form_submit_button("🚀 診斷期貨", type="primary", use_container_width=True)
 
     if df_market is not None and df_futures_bench is not None:
         twii_close = df_market.iloc[-1]['Close']
@@ -2870,7 +2889,9 @@ elif st.session_state.main_mode == "tw_futures":
     clean_key = raw_fut_input.strip().upper().replace("=F", "")
     spec_info = TW_FUTURES_SPECS.get(clean_key, TW_FUTURES_SPECS["WTX"])
 
-    if exec_fut_btn or st.session_state.analysis_cache_fut is None:
+    if exec_fut_btn or st.session_state.auto_run_fut or st.session_state.analysis_cache_fut is None:
+        st.session_state.auto_run_fut = False
+        st.session_state.selected_fut_contract = clean_key
         with st.spinner("連線期貨點位與期顧模型中..."):
             df_target_fut = fetch_and_calc("WTX=F")
             fallback_note = None
