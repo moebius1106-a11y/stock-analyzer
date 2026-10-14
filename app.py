@@ -17,7 +17,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 手機端直覺觸控與字體最適化 CSS
+# 手機端直覺觸控與雙欄排版強制 CSS (徹底解決單欄坍塌與溢出)
 st.markdown("""
 <style>
     html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {
@@ -25,69 +25,89 @@ st.markdown("""
         max-width: 100vw !important;
     }
     .block-container {
-        padding-top: 3.6rem !important;
+        padding-top: 3.5rem !important;
         padding-bottom: 2rem !important;
-        padding-left: 0.85rem !important;
-        padding-right: 0.85rem !important;
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
         max-width: 100% !important;
         overflow-x: hidden !important;
     }
     h1 {
-        font-size: 1.38rem !important;
+        font-size: 1.35rem !important;
         font-weight: 800 !important;
-        line-height: 1.35 !important;
+        line-height: 1.3 !important;
         margin-top: 0.2rem !important;
-        margin-bottom: 0.5rem !important;
+        margin-bottom: 0.45rem !important;
         padding: 0 !important;
         letter-spacing: -0.01em !important;
     }
     h2 {
-        font-size: 1.20rem !important;
+        font-size: 1.15rem !important;
         font-weight: 700 !important;
-        margin-top: 0.4rem !important;
-        margin-bottom: 0.3rem !important;
+        margin-top: 0.35rem !important;
+        margin-bottom: 0.25rem !important;
     }
     h3 {
-        font-size: 1.05rem !important;
+        font-size: 1.02rem !important;
         font-weight: 600 !important;
     }
+
+    /* 手機端強制維持雙欄排版，絕不坍塌成單欄長條 */
+    div[data-testid="stHorizontalBlock"] {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        gap: 0.35rem !important;
+        width: 100% !important;
+    }
+    div[data-testid="column"] {
+        flex: 1 1 0% !important;
+        min-width: 0 !important;
+        width: auto !important;
+    }
+
+    /* 按鈕大小與字級最佳化：緊湊好按，文字單行完整呈現 */
     div.stButton > button {
         width: 100% !important;
-        min-height: 3.1rem !important;
-        font-size: 1.05rem !important;
+        min-height: 2.65rem !important;
+        font-size: 0.96rem !important;
         font-weight: 700 !important;
-        border-radius: 12px !important;
-        margin-bottom: 0.3rem !important;
-        padding: 0.4rem 0.5rem !important;
+        border-radius: 10px !important;
+        margin-bottom: 0.25rem !important;
+        padding: 0.3rem 0.4rem !important;
         line-height: 1.25 !important;
         letter-spacing: 0.01em !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
     }
+
     div.stTextInput > div > div > input {
-        height: 2.9rem !important;
+        height: 2.85rem !important;
         font-size: 1.05rem !important;
         border-radius: 10px !important;
     }
     div[data-testid="stMetric"] {
         background-color: rgba(128, 128, 128, 0.08);
         border: 1px solid rgba(128, 128, 128, 0.18);
-        padding: 0.55rem 0.75rem !important;
+        padding: 0.5rem 0.7rem !important;
         border-radius: 12px;
-        margin-bottom: 0.35rem;
+        margin-bottom: 0.3rem;
     }
     div[data-testid="stMetricLabel"] {
-        font-size: 0.88rem !important;
+        font-size: 0.86rem !important;
         font-weight: 600 !important;
     }
     div[data-testid="stMetricValue"] {
-        font-size: 1.35rem !important;
+        font-size: 1.30rem !important;
         font-weight: 700 !important;
     }
     .streamlit-expanderHeader {
-        font-size: 1.02rem !important;
+        font-size: 1.00rem !important;
         font-weight: 600 !important;
         border-radius: 10px !important;
         background-color: rgba(128, 128, 128, 0.05) !important;
-        padding: 0.5rem 0.8rem !important;
+        padding: 0.45rem 0.75rem !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -128,13 +148,73 @@ if not st.session_state.authenticated:
             st.error("密碼錯誤，請重新輸入。")
     st.stop()
 
+# ----------------- 全市場常用股票中文名稱對照字典 -----------------
+COMMON_STOCK_NAMES = {
+    # 台股核心權值
+    "2330.TW": "台積電", "2330": "台積電",
+    "2317.TW": "鴻海", "2317": "鴻海",
+    "2454.TW": "聯發科", "2454": "聯發科",
+    "2382.TW": "廣達", "2382": "廣達",
+    "2308.TW": "台達電", "2308": "台達電",
+    "6669.TW": "緯穎", "6669": "緯穎",
+    "2881.TW": "富邦金", "2881": "富邦金",
+    "2882.TW": "國泰金", "2882": "國泰金",
+    "2891.TW": "中信金", "2891": "中信金",
+    "2886.TW": "兆豐金", "2886": "兆豐金",
+    "2603.TW": "長榮", "2603": "長榮",
+    "2609.TW": "陽明", "2609": "陽明",
+    "2615.TW": "萬海", "2615": "萬海",
+    "3008.TW": "大立光", "3008": "大立光",
+    "3017.TW": "奇鋐", "3017": "奇鋐",
+    "3324.TW": "雙鴻", "3324": "雙鴻",
+    "3231.TW": "緯創", "3231": "緯創",
+    "2357.TW": "華碩", "2357": "華碩",
+    "2379.TW": "瑞昱", "2379": "瑞昱",
+    "3034.TW": "聯詠", "3034": "聯詠",
+    "3711.TW": "日月光", "3711": "日月光",
+    "2618.TW": "長榮航", "2618": "長榮航",
+    "2610.TW": "華航", "2610": "華航",
+    # 上櫃熱門
+    "6488.TWO": "環球晶", "6488": "環球晶",
+    "3293.TWO": "鈊象", "3293": "鈊象",
+    "8299.TWO": "群聯", "8299": "群聯",
+    "3529.TWO": "力旺", "3529": "力旺",
+    # ETF 系列
+    "0050.TW": "元大台灣50", "0050": "元大台灣50",
+    "006208.TW": "富邦台50", "006208": "富邦台50",
+    "0056.TW": "元大高股息", "0056": "元大高股息",
+    "00878.TW": "國泰高股息", "00878": "國泰高股息",
+    "00919.TW": "群益高息", "00919": "群益高息",
+    "00929.TW": "復華科技優息", "00929": "復華科技優息",
+    "00940.TW": "元大價值高息", "00940": "元大價值高息",
+    "00757.TW": "統一FANG+", "00757": "統一FANG+",
+    "00830.TW": "國泰費半", "00830": "國泰費半",
+    "00662.TW": "富邦NASDAQ", "00662": "富邦NASDAQ",
+    "00679B.TWO": "元大美債20", "00679B": "元大美債20",
+    "00687B.TWO": "國泰美債20", "00687B": "國泰美債20",
+    # 美股龍頭
+    "NVDA": "輝達", "AAPL": "蘋果", "MSFT": "微軟", "TSLA": "特斯拉",
+    "GOOGL": "谷歌", "GOOG": "谷歌", "AMZN": "亞馬遜", "META": "Meta",
+    "AMD": "超微", "TSM": "台積電ADR", "AVGO": "博通", "QCOM": "高通",
+    "INTC": "英特爾", "ARM": "安謀", "SMCI": "美超微", "NFLX": "網飛"
+}
+
+def get_stock_display_label(ticker: str, is_fav=False):
+    t_upper = ticker.strip().upper()
+    clean_code = t_upper.replace(".TW", "").replace(".TWO", "")
+    name = COMMON_STOCK_NAMES.get(t_upper, COMMON_STOCK_NAMES.get(clean_code, ""))
+    prefix = "⭐ " if is_fav else ""
+    if name:
+        return f"{prefix}{name} ({clean_code})"
+    return f"{prefix}{clean_code}"
+
 # ----------------- 常用股票與歷史持久化記憶模組 -----------------
 HISTORY_FILE = "user_history.json"
 
 def get_user_data():
     default_data = {
-        "tw_favorites": ["2330.TW", "2317.TW", "2454.TW", "0050.TW"],
-        "tw_recent": ["2330.TW", "2454.TW", "2317.TW"],
+        "tw_favorites": ["2330.TW", "2454.TW", "2317.TW", "0050.TW"],
+        "tw_recent": ["2330.TW", "2454.TW"],
         "us_favorites": ["NVDA", "AAPL", "MSFT", "TSLA"],
         "us_recent": ["NVDA", "AAPL"]
     }
@@ -835,7 +915,7 @@ def analyze_forex_data():
 
     return res
 
-# ----------------- 全維度綜合量化評估 (徹底解決防守價大於現價之矛盾) -----------------
+# ----------------- 全維度綜合量化評估 -----------------
 def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, forex_info, asset_type="tw"):
     live_twse = fetch_twse_realtime(ticker) if asset_type == "tw" else None
     ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag = analyze_opening_and_ma(df_stock, live_twse)
@@ -931,17 +1011,13 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
 
     total_score = min(max(total_score, 0), 100)
 
-    # 【防守停損與多空准入修復核心】
+    # 防守停損與多空准入
     ma20_val = safe_float(last_stk['MA20'], close * 0.96)
-    
-    # 嚴格區分「多方守位」與「空方破線」
     if close >= ma20_val:
-        # 多方架構：防守價以 (月線 - 0.5*ATR) 與 (現價 - 2*ATR) 取較高者，但上限絕不超過現價 98.5%
         raw_stop = max(close - 2.0 * atr_val, ma20_val - 0.5 * atr_val)
         stop_loss = min(raw_stop, close * 0.985)
         is_breakdown = False
     else:
-        # 空方破線：現價已在月線下方，月線已轉為上檔壓力，做多停損強制錨定於現價下方之 ATR 緩衝區
         stop_loss = min(close - 2.0 * atr_val, close * 0.985)
         is_breakdown = True
 
@@ -1127,26 +1203,16 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與架
     
     ### ⭐【常用股票記憶與快速查詢系統】
     - **自訂常用清單**：任何個股或 ETF 診斷後，可一鍵加入常用清單，跨頁面/跨重整 (F5) 依然永久保存。
-    - **最近查詢紀錄**：自動追蹤最近 6 檔查詢標的，點擊按鈕直接一秒自動診斷，省去重複輸入麻煩。
+    - **中文股票名稱智慧對照**：常用清單與歷史紀錄全面顯示公司中文名稱（如 `台積電 (2330)`、`輝達 (NVDA)`）。
     
     ### 💡【全市場查詢代碼輸入格式教學】
     - **台股上市股票**：請輸入 `代碼.TW`（例如：`2330.TW`、`2603.TW`），**亦支援直接輸入 4 位數純代號**（如輸入 `2330`，系統將自動為您補正為 `2330.TW`）。
     - **台股上櫃股票**：請務必加上 `.TWO`（例如：`6488.TWO`、`3293.TWO`、`00679B.TWO`），避免無法取得櫃買中心即時撮合行情。
-    - **美股現貨標的**：請輸入美股英文代碼（例如：`NVDA`、`AAPL`、`TSLA`、`MSFT`、`TSM`），輸入小寫字母系統將自動轉為標準大寫連線。
-    - **台灣期貨契約**：可直接點選快捷按鈕或輸入契約簡稱（`WTX` 大台、`MTX` 小台、`WMT` 微台、`TE` 電子期、`TF` 金融期），系統將自動對齊指數點位與該契約專屬保證金跳點規格。
-    - **美股四大期指**：支援 `NQ=F` (微那指)、`ES=F` (微標普)、`YM=F` (道瓊期)、`RTY=F` (羅素2000)。
-    
-    ---
-    ### 🛠️【核心模組說明】
-    1. **🔍 台股全維度深度體檢**：直連 TWSE 撮合主機（單位自動乘 1000 股對齊），顯示即時開盤跳空、紅黑 K 棒、三均線矩陣 (5/20/60MA)、階梯停利 SOP、建議張數風控計算機、無前視偏誤回測（扣除 0.45% 摩擦成本、真實 MDD）。
-    2. **🇺🇸 美股即時診斷專區**：同規格支援美股開盤跳空、均線矩陣、基本面護城河、華爾街分析師平均目標價與評等，以「股 (Shares)」為單位精算風控。
-    3. **🇹🇼 台灣期貨獨立專區**：智慧路由對齊指數點位，載入微台/小台/大台真實保證金與每點價值，嚴格校驗期現貨基差，依保證金門檻精算建議口數 (Lots)。
-    4. **📈 美股期貨獨立專區**：即時四大美指期貨動能與科技 vs 價值輪動評估。
-    5. **📊 ETF 策略專區**：市值型、高股息、海外科技與長天期美債四大分類雷達；微笑曲線定期定額加碼計算機。
-    6. **💎 體質雷達 ＆ 📢 法說重大訊息 ＆ 💱 全球外匯**：藍籌雙重量化濾網、個股即時重大新聞速查、台銀官方 USD/TWD 與日圓平倉風險監控。
+    - **美股現貨標的**：請輸入美股英文代碼（例如：`NVDA`、`AAPL`、`TSLA`、`MSFT`、`TSM`），大小寫系統皆可自動識別轉換。
+    - **台灣期貨契約**：可直接點選快捷按鈕或輸入契約簡稱（`WTX` 大台、`MTX` 小台、`WMT` 微台、`TE` 電子期、`TF` 金融期）。
     """)
 
-# 頂部八大模式切換
+# 頂部八大模式切換 (手機端強制 2 欄並排，補回國旗圖示)
 r1_c1, r1_c2 = st.columns(2)
 with r1_c1:
     if st.button("🔍 台股診斷", type="primary" if st.session_state.main_mode == "tw_stock" else "secondary", use_container_width=True, key="m_nav_tw_stock"):
@@ -1197,7 +1263,7 @@ df_sox = fetch_and_calc("^SOX")
 df_spx = fetch_and_calc("^GSPC")
 global_forex = analyze_forex_data()
 
-# ================= 模組共用渲染器 (防守價與空方准入邏輯全面修復) =================
+# ================= 模組共用渲染器 =================
 def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallback_warning=None, ticker_raw=None):
     is_downtrend = res.get('is_breakdown', False) or (res['close'] < res['ma_status']['ma20_val'])
     risk_unit = max(res['close'] - res['stop_loss'], res['close'] * 0.015)
@@ -1429,18 +1495,19 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         chart_data = df_asset[valid_cols].dropna().tail(60)
         st.line_chart(chart_data)
 
-# ================= 模式 1：🔍 台股診斷 =================
+# ================= 模式 1：🔍 台股診斷 (含中文名稱與雙欄卡片) =================
 if st.session_state.main_mode == "tw_stock":
     st.subheader("🔍 台股全維度深度體檢")
 
-    tw_favs = user_memory.get("tw_favorites", ["2330.TW", "2317.TW", "2454.TW", "0050.TW"])
+    tw_favs = user_memory.get("tw_favorites", ["2330.TW", "2454.TW", "2317.TW", "0050.TW"])
     st.caption("⭐ **我的常用股票清單**（點選一秒自動診斷）：")
 
+    # 手機強制雙欄顯示常用股票卡片
     fav_cols = st.columns(2)
     for idx, fav_code in enumerate(tw_favs[:6]):
         col_target = fav_cols[idx % 2]
-        display_name = fav_code.replace(".TW", "").replace(".TWO", "")
-        if col_target.button(f"⭐ {fav_code}", use_container_width=True, key=f"tw_fav_{fav_code}"):
+        display_label = get_stock_display_label(fav_code, is_fav=True)
+        if col_target.button(display_label, use_container_width=True, key=f"tw_fav_{fav_code}"):
             st.session_state.selected_tw_ticker = fav_code
             st.session_state.analysis_cache_tw = None
             st.session_state.auto_run_tw = True
@@ -1449,9 +1516,11 @@ if st.session_state.main_mode == "tw_stock":
     tw_recents = [r for r in user_memory.get("tw_recent", []) if r not in tw_favs][:4]
     if tw_recents:
         st.caption("🕒 **最近查詢紀錄**：")
-        rec_cols = st.columns(len(tw_recents))
+        rec_cols = st.columns(2)
         for r_idx, r_code in enumerate(tw_recents):
-            if rec_cols[r_idx].button(f"{r_code}", use_container_width=True, key=f"tw_rec_{r_code}"):
+            col_rec_target = rec_cols[r_idx % 2]
+            rec_display = get_stock_display_label(r_code, is_fav=False)
+            if col_rec_target.button(rec_display, use_container_width=True, key=f"tw_rec_{r_code}"):
                 st.session_state.selected_tw_ticker = r_code
                 st.session_state.analysis_cache_tw = None
                 st.session_state.auto_run_tw = True
@@ -1487,7 +1556,8 @@ if st.session_state.main_mode == "tw_stock":
         st.caption("點擊下方紅色按鈕可從常用清單中移出：")
         del_cols = st.columns(2)
         for d_idx, d_code in enumerate(user_memory["tw_favorites"]):
-            if del_cols[d_idx % 2].button(f"❌ 移出 {d_code}", key=f"del_tw_fav_{d_code}", use_container_width=True):
+            del_label = f"❌ {get_stock_display_label(d_code, is_fav=False)}"
+            if del_cols[d_idx % 2].button(del_label, key=f"del_tw_fav_{d_code}", use_container_width=True):
                 user_memory["tw_favorites"].remove(d_code)
                 save_user_data()
                 st.rerun()
@@ -1512,7 +1582,7 @@ if st.session_state.main_mode == "tw_stock":
         r, df_stk, cur_t = st.session_state.analysis_cache_tw
         render_analysis_view(r, df_stk, mode_type="tw", ticker_raw=cur_t)
 
-# ================= 模式 2：🇺🇸 美股診斷 =================
+# ================= 模式 2：🇺🇸 美股診斷 (含中文名稱與雙欄卡片) =================
 elif st.session_state.main_mode == "us_stock":
     st.subheader("🇺🇸 美股全維度深度體檢 (全功能同規格)")
 
@@ -1522,7 +1592,8 @@ elif st.session_state.main_mode == "us_stock":
     fav_u_cols = st.columns(2)
     for idx, fav_u_code in enumerate(us_favs[:6]):
         col_u_target = fav_u_cols[idx % 2]
-        if col_u_target.button(f"⭐ {fav_u_code}", use_container_width=True, key=f"us_fav_{fav_u_code}"):
+        display_u_label = get_stock_display_label(fav_u_code, is_fav=True)
+        if col_u_target.button(display_u_label, use_container_width=True, key=f"us_fav_{fav_u_code}"):
             st.session_state.selected_us_ticker = fav_u_code
             st.session_state.analysis_cache_us = None
             st.session_state.auto_run_us = True
@@ -1531,9 +1602,11 @@ elif st.session_state.main_mode == "us_stock":
     us_recents = [r for r in user_memory.get("us_recent", []) if r not in us_favs][:4]
     if us_recents:
         st.caption("🕒 **最近查詢紀錄**：")
-        rec_u_cols = st.columns(len(us_recents))
+        rec_u_cols = st.columns(2)
         for ru_idx, ru_code in enumerate(us_recents):
-            if rec_u_cols[ru_idx].button(f"{ru_code}", use_container_width=True, key=f"us_rec_{ru_code}"):
+            col_rec_u = rec_u_cols[ru_idx % 2]
+            rec_u_label = get_stock_display_label(ru_code, is_fav=False)
+            if col_rec_u.button(rec_u_label, use_container_width=True, key=f"us_rec_{ru_code}"):
                 st.session_state.selected_us_ticker = ru_code
                 st.session_state.analysis_cache_us = None
                 st.session_state.auto_run_us = True
@@ -1568,7 +1641,8 @@ elif st.session_state.main_mode == "us_stock":
 
         del_u_cols = st.columns(2)
         for du_idx, du_code in enumerate(user_memory["us_favorites"]):
-            if del_u_cols[du_idx % 2].button(f"❌ 移出 {du_code}", key=f"del_us_fav_{du_code}", use_container_width=True):
+            del_u_label = f"❌ {get_stock_display_label(du_code, is_fav=False)}"
+            if del_u_cols[du_idx % 2].button(del_u_label, key=f"del_us_fav_{du_code}", use_container_width=True):
                 user_memory["us_favorites"].remove(du_code)
                 save_user_data()
                 st.rerun()
@@ -1594,6 +1668,7 @@ elif st.session_state.main_mode == "tw_futures":
     st.subheader("🇹🇼 台灣期貨全維度專區 (優質契約・期顧共識・基差診斷)")
     st.caption("內建熱門台期契約池・自選查詢・多空目標壓力與保證金風控")
 
+    # 1. 快捷商品切換 (雙欄並排卡片)
     fq1, fq2 = st.columns(2)
     with fq1:
         if st.button("台指期 (大台)", use_container_width=True, key="fq_wtx"):
