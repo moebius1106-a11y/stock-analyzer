@@ -4,10 +4,12 @@ import pandas as pd
 import numpy as np
 import altair as alt
 import requests
+import xml.etree.ElementTree as ET
 import math
 import json
 import os
 import time
+from urllib.parse import quote
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
@@ -165,18 +167,38 @@ st.markdown("""
     .tw-up { color: #e53935; font-weight: 700; }
     .tw-down { color: #43a047; font-weight: 700; }
     .tw-flat { color: #888888; font-weight: 700; }
+
+    /* 置頂戰情焦點廣播卡片樣式 */
+    .macro-alert-card {
+        background: linear-gradient(135deg, rgba(229, 57, 53, 0.10), rgba(26, 115, 232, 0.08));
+        border-left: 5px solid #e53935;
+        border-top: 1px solid rgba(229, 57, 53, 0.25);
+        border-right: 1px solid rgba(229, 57, 53, 0.25);
+        border-bottom: 1px solid rgba(229, 57, 53, 0.25);
+        border-radius: 10px;
+        padding: 0.75rem 0.95rem;
+        margin-bottom: 0.65rem;
+        font-size: 0.95rem;
+        line-height: 1.55;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 TAIPEI_TZ = timezone(timedelta(hours=8))
 
-# ----------------- 通行密碼防護 (強制 Secrets 安全檢查) -----------------
+# ----------------- 多使用者身分驗證與通行密碼防護 -----------------
 try:
     ACCESS_PASSWORD = st.secrets["PASSWORD"]
 except Exception:
     ACCESS_PASSWORD = None
 
-if ACCESS_PASSWORD is None:
+# 支援在 Secrets 中設定個別使用者專屬密碼，例如 [USERS] Alex = "pass123"
+try:
+    CUSTOM_USERS_DICT = dict(st.secrets.get("USERS", {}))
+except Exception:
+    CUSTOM_USERS_DICT = {}
+
+if ACCESS_PASSWORD is None and not CUSTOM_USERS_DICT:
     st.error("🚨 **系統安全性錯誤：未檢測到 Streamlit Secrets [PASSWORD] 設定！**")
     st.markdown("""
     **【解決步驟】**：
@@ -192,16 +214,33 @@ if ACCESS_PASSWORD is None:
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
+if "current_user" not in st.session_state:
+    st.session_state.current_user = "預設操盤手"
+
 if not st.session_state.authenticated:
     st.title("🔐 內部量化決策系統")
-    st.caption("請輸入通行碼以開始使用")
-    pwd = st.text_input("訪問密碼", type="password", key="login_pwd")
-    if st.button("🔓 登入系統", type="primary", use_container_width=True, key="login_btn"):
-        if pwd == ACCESS_PASSWORD:
+    st.caption("請輸入您的「專屬使用者代號／暱稱」與「訪問密碼」以啟動個人獨立記憶空間")
+    user_id_input = st.text_input("👤 使用者代號 / 暱稱（不同人將自動分開記錄自選股與資金設定）", value="", placeholder="例：Alex、王董、VIP01", key="login_user_id")
+    pwd = st.text_input("🔑 訪問密碼", type="password", key="login_pwd")
+
+    if st.button("🔓 登入個人決策空間", type="primary", use_container_width=True, key="login_btn"):
+        clean_uid = user_id_input.strip() if user_id_input.strip() else "預設操盤手"
+        # 驗證邏輯：支援個別帳號密碼 (CUSTOM_USERS_DICT) 或 全域通行碼 (ACCESS_PASSWORD)
+        is_valid = False
+        if clean_uid in CUSTOM_USERS_DICT and pwd == str(CUSTOM_USERS_DICT[clean_uid]):
+            is_valid = True
+        elif ACCESS_PASSWORD is not None and pwd == str(ACCESS_PASSWORD):
+            is_valid = True
+
+        if is_valid:
             st.session_state.authenticated = True
+            st.session_state.current_user = clean_uid
+            # 切換使用者時強制重新載入該使用者的專屬記憶
+            if "user_data" in st.session_state:
+                del st.session_state["user_data"]
             st.rerun()
         else:
-            st.error("密碼錯誤，請重新輸入。")
+            st.error("密碼錯誤或使用者代號未授權，請重新輸入。")
     st.stop()
 
 # ----------------- 全市場股票中文名稱對照字典 (執行緒安全共享字典) -----------------
@@ -272,38 +311,80 @@ def get_stock_display_label(ticker: str, is_fav=False):
         return f"{prefix}{name} ({clean_code})"
     return f"{prefix}{clean_code}"
 
-# ----------------- 常用股票與歷史持久化記憶模組 -----------------
-HISTORY_FILE = "user_history.json"
+# ----------------- V8.0 多使用者分流記憶引擎 (Multi-User Profile Isolation) -----------------
+PROFILES_FILE = "user_profiles.json"
+LEGACY_HISTORY_FILE = "user_history.json"
 
-def get_user_data():
-    default_data = {
+def get_default_profile():
+    return {
         "tw_favorites": ["2330.TW", "2454.TW", "2317.TW", "0050.TW"],
         "tw_recent": ["2330.TW", "2454.TW"],
         "us_favorites": ["NVDA", "AAPL", "MSFT", "TSLA"],
-        "us_recent": ["NVDA", "AAPL"]
+        "us_recent": ["NVDA", "AAPL"],
+        "capital_tw": 1000000,
+        "capital_us": 50000,
+        "capital_fut": 1000000,
+        "risk_pct": 1.0,
+        "personal_note": "",
+        "last_active": datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M")
     }
-    if "user_data" not in st.session_state:
-        if os.path.exists(HISTORY_FILE):
-            try:
-                with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    for k, v in default_data.items():
-                        if k not in data or not isinstance(data[k], list):
-                            data[k] = v
-                    st.session_state.user_data = data
-            except Exception:
-                st.session_state.user_data = default_data
-        else:
-            st.session_state.user_data = default_data
+
+def load_all_profiles():
+    all_data = {"users": {}}
+    if os.path.exists(PROFILES_FILE):
+        try:
+            with open(PROFILES_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict) and "users" in loaded:
+                    all_data = loaded
+        except Exception:
+            pass
+    elif os.path.exists(LEGACY_HISTORY_FILE):
+        # 自動無縫遷移舊版單一設定檔至「預設操盤手」
+        try:
+            with open(LEGACY_HISTORY_FILE, "r", encoding="utf-8") as f:
+                legacy = json.load(f)
+                base_p = get_default_profile()
+                for k in ("tw_favorites", "tw_recent", "us_favorites", "us_recent"):
+                    if k in legacy and isinstance(legacy[k], list):
+                        base_p[k] = legacy[k]
+                all_data["users"]["預設操盤手"] = base_p
+        except Exception:
+            pass
+    return all_data
+
+def get_user_data():
+    uid = st.session_state.get("current_user", "預設操盤手")
+    default_p = get_default_profile()
+    if "user_data" not in st.session_state or st.session_state.get("loaded_uid") != uid:
+        all_profiles = load_all_profiles()
+        user_p = all_profiles["users"].get(uid, {})
+        for k, v in default_p.items():
+            if k not in user_p:
+                user_p[k] = v
+        st.session_state.user_data = user_p
+        st.session_state.loaded_uid = uid
     return st.session_state.user_data
 
 def save_user_data():
+    uid = st.session_state.get("current_user", "預設操盤手")
     if "user_data" in st.session_state:
         try:
-            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(st.session_state.user_data, f, ensure_ascii=False, indent=2)
+            st.session_state.user_data["last_active"] = datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M")
+            all_profiles = load_all_profiles()
+            all_profiles["users"][uid] = st.session_state.user_data
+            with open(PROFILES_FILE, "w", encoding="utf-8") as f:
+                json.dump(all_profiles, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+
+def get_registered_user_list():
+    all_profiles = load_all_profiles()
+    users = list(all_profiles.get("users", {}).keys())
+    cur = st.session_state.get("current_user", "預設操盤手")
+    if cur not in users:
+        users.insert(0, cur)
+    return users
 
 def add_recent_history(market: str, ticker: str):
     data = get_user_data()
@@ -324,6 +405,78 @@ def toggle_favorite_stock(market: str, ticker: str):
     else:
         data[key].append(ticker)
     save_user_data()
+
+# ----------------- V8.0 關鍵市場戰情焦點快訊與即時外電導入系統 -----------------
+BRIEFING_FILE = "market_briefings.json"
+
+DEFAULT_STRATEGIC_BRIEFING = {
+    "title": "🔥 關鍵戰情焦點：台股叩關 5 萬點前劇烈洗盤 vs 今晚 20:30 美國 9 月 CPI 決戰",
+    "content": (
+        "台股短線正在叩關 5 萬點前的劇烈洗盤與技術面修正，是否會進一步崩盤，關鍵在於今晚（10月14日）20:30 公布的美國 9 月 CPI 數據是否大幅超出市場預期。\n\n"
+        "📌 **核心數據觀測指標**：\n"
+        "• **整體 CPI 年增率**：受能源價格影響，市場普遍預期將回升至 **3.6% ~ 3.7%**。\n"
+        "• **核心 CPI 年增率**：市場預期維持在 **2.4%** 溫和水準。\n"
+        "• **操作應變劇本**：只要最終開獎數字符合預期或核心 CPI 表現溫和，台股近期由美股費半連跌引發的恐慌性修正就有望落底並迎來強勢反彈；反之若核心 CPI 意外跳升破 2.6%，則需嚴守月線與 ATR 停損紀律、保留現金。"
+    ),
+    "author": "系統首席策略中心",
+    "updated_at": "2026-10-14 12:20",
+    "level": "critical"
+}
+
+def load_market_briefing():
+    if os.path.exists(BRIEFING_FILE):
+        try:
+            with open(BRIEFING_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "content" in data:
+                    return data
+        except Exception:
+            pass
+    return DEFAULT_STRATEGIC_BRIEFING.copy()
+
+def save_market_briefing(title: str, content: str, author: str):
+    new_b = {
+        "title": title.strip(),
+        "content": content.strip(),
+        "author": author.strip() or "系統策略中心",
+        "updated_at": datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M"),
+        "level": "critical"
+    }
+    try:
+        with open(BRIEFING_FILE, "w", encoding="utf-8") as f:
+            json.dump(new_b, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return new_b
+
+@st.cache_data(ttl=180)
+def fetch_live_macro_rss(query_str: str = "台股 OR 美股 OR CPI OR 聯準會 OR 台積電 OR 費半"):
+    """
+    透過 Google News RSS 擷取台灣與國際最新宏觀財經焦點頭條（免 API Key、即時更新）
+    """
+    encoded_q = quote(query_str)
+    url = f"https://news.google.com/rss/search?q={encoded_q}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    items = []
+    try:
+        r = requests.get(url, headers=headers, timeout=3.5)
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            for item in root.findall("./channel/item")[:8]:
+                title = item.findtext("title", default="無標題")
+                link = item.findtext("link", default="#")
+                pub_date = item.findtext("pubDate", default="")
+                source_el = item.find("source")
+                source_name = source_el.text if source_el is not None else "財經快訊"
+                items.append({
+                    "title": title,
+                    "link": link,
+                    "source": source_name,
+                    "pub_date": pub_date[:22] if pub_date else "即時"
+                })
+    except Exception:
+        pass
+    return items
 
 # ----------------- 數值安全轉換工具 -----------------
 def safe_float(val, default=0.0):
@@ -403,7 +556,6 @@ def fetch_twse_realtime(ticker: str):
                 date_str = item.get("d", "")
                 time_str = item.get("t", "")
 
-                # 解析即時五檔委買與委賣明細
                 b_prices = [safe_float(x) for x in str(item.get("b", "")).split("_") if x.strip()][:5]
                 b_vols = [int(safe_float(x)) for x in str(item.get("g", "")).split("_") if x.strip()][:5]
                 a_prices = [safe_float(x) for x in str(item.get("a", "")).split("_") if x.strip()][:5]
@@ -445,14 +597,9 @@ def fetch_twse_realtime(ticker: str):
         pass
     return None
 
-# ----------------- 權威 API 1-B：大盤即時統計看板 (加權含金融/未含金融/委買委賣/漲跌家數) -----------------
+# ----------------- 權威 API 1-B：大盤即時統計看板 -----------------
 @st.cache_data(ttl=15)
 def fetch_twse_market_dashboard():
-    """
-    直連證交所 MIS 擷取：
-    1. 加權指數 (含金融 t00.tw) 與 加權指數 (未含金融 t001.tw) 與 櫃買指數 (o00.tw)
-    2. 大盤委買/委賣筆數、張數、成交金額、漲跌停家數統計
-    """
     result = {
         "twii_price": 0.0, "twii_chg": 0.0, "twii_pct": 0.0,
         "twii_high": 0.0, "twii_low": 0.0, "twii_open": 0.0, "twii_yclose": 0.0,
@@ -474,7 +621,6 @@ def fetch_twse_market_dashboard():
         "Referer": "https://mis.twse.com.tw/stock/index.jsp"
     }
 
-    # 1. 取得加權指數 (t00.tw)、未含金融指數 (t001.tw)、櫃買指數 (o00.tw)
     try:
         idx_url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw|tse_t001.tw|otc_o00.tw&json=1&delay=0"
         r_idx = session.get(idx_url, headers=headers, timeout=3.0)
@@ -497,7 +643,6 @@ def fetch_twse_market_dashboard():
                     result["twii_open"] = safe_float(item.get("o"), default=z_val)
                     result["twii_high"] = safe_float(item.get("h"), default=z_val)
                     result["twii_low"] = safe_float(item.get("l"), default=z_val)
-                    # t00 的 v 單位為百萬元，除以 100 轉為億元
                     v_million = safe_float(item.get("v"), default=0.0)
                     if v_million > 0:
                         result["turnover_billion"] = v_million / 100.0
@@ -516,7 +661,6 @@ def fetch_twse_market_dashboard():
     except Exception:
         pass
 
-    # 2. 取得大盤委買委賣筆數/張數與漲跌家數 (getStatis.jsp)
     try:
         stat_url = "https://mis.twse.com.tw/stock/api/getStatis.jsp?ex=tse&delay=0"
         r_stat = session.get(stat_url, headers=headers, timeout=3.0)
@@ -575,12 +719,8 @@ def fetch_twse_market_dashboard():
 # ----------------- 即時分時走勢數據擷取與雙層圖表渲染引擎 -----------------
 @st.cache_data(ttl=30)
 def fetch_intraday_series(ticker: str):
-    """
-    擷取當日 1 分 K 或 5 分 K 分時走勢資料，並對齊昨收基準價
-    """
     try:
         t = yf.Ticker(ticker)
-        # 優先取 1 分 K，若休市或無資料則取近 5 日之 5 分 K 並篩選最後一個交易日
         df_intra = t.history(period="1d", interval="1m")
         if df_intra is None or df_intra.empty or len(df_intra) < 5:
             df_5d = t.history(period="5d", interval="5m")
@@ -594,7 +734,6 @@ def fetch_intraday_series(ticker: str):
         if isinstance(df_intra.columns, pd.MultiIndex):
             df_intra.columns = df_intra.columns.get_level_values(0)
 
-        # 取得昨收基準價
         df_daily = t.history(period="5d", interval="1d")
         y_close = None
         if df_daily is not None and len(df_daily) >= 2:
@@ -602,7 +741,6 @@ def fetch_intraday_series(ticker: str):
                 df_daily.columns = df_daily.columns.get_level_values(0)
             y_close = safe_float(df_daily['Close'].iloc[-2])
 
-        # 若為台股或加權指數，優先以 TWSE 官方昨收價與最新撮合價校準
         if ticker.upper() == "^TWII":
             dash = fetch_twse_market_dashboard()
             if dash["twii_yclose"] > 0:
@@ -619,7 +757,6 @@ def fetch_intraday_series(ticker: str):
         if df_plot.empty:
             return None, None
 
-        # 轉換時區顯示時間字串
         if df_plot.index.tz is not None:
             if ".TW" in ticker.upper() or ".TWO" in ticker.upper() or ticker.upper() in ("^TWII", "WTX=F"):
                 local_idx = df_plot.index.tz_convert(TAIPEI_TZ)
@@ -640,9 +777,6 @@ def fetch_intraday_series(ticker: str):
         return None, None
 
 def render_intraday_chart_widget(ticker: str, title_name: str = ""):
-    """
-    渲染 Yahoo 股市風格之即時分時走勢圖（藍色走勢線 + 昨收平盤虛線 + 底部紅綠成交量柱）
-    """
     df_intra, y_close = fetch_intraday_series(ticker)
     if df_intra is None or df_intra.empty:
         st.info("⚪ 目前無該標的之分時明細資料（可能處於非交易時段或外部報價源結算中）。")
@@ -655,7 +789,6 @@ def render_intraday_chart_widget(ticker: str, title_name: str = ""):
     chg_val = curr_p - y_close
     chg_pct = (chg_val / (y_close + 1e-9)) * 100.0
 
-    # 頂部即時跳動狀態列 (如同截圖左上角：時間、價、最高價、最低價、昨收)
     color_cls = "tw-up" if chg_val > 0 else ("tw-down" if chg_val < 0 else "tw-flat")
     sign_str = "+" if chg_val > 0 else ""
     st.markdown(
@@ -667,13 +800,11 @@ def render_intraday_chart_widget(ticker: str, title_name: str = ""):
         unsafe_allow_html=True
     )
 
-    # 計算 Y 軸上下邊界，確保包含昨收虛線並留有 15% 視覺緩衝
     min_y = min(low_p, y_close)
     max_y = max(high_p, y_close)
     pad = max((max_y - min_y) * 0.15, y_close * 0.002)
     y_domain = [min_y - pad, max_y + pad]
 
-    # 上層：分時價格折線 + 漸層區域 + 昨收平盤虛線
     base = alt.Chart(df_intra).encode(
         x=alt.X('TimeStr:O', title=None, axis=alt.Axis(labelAngle=0, labelOverlap=True, tickCount=6))
     )
@@ -697,7 +828,6 @@ def render_intraday_chart_widget(ticker: str, title_name: str = ""):
 
     top_chart = (price_line + ref_rule).properties(height=210)
 
-    # 下層：紅綠分時成交量柱狀圖
     vol_bars = base.mark_bar().encode(
         y=alt.Y('VolLots:Q', title='分時量', axis=alt.Axis(labels=False, ticks=False)),
         color=alt.Color(
@@ -1315,7 +1445,6 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
         except Exception:
             global_score += 8
 
-    # 大盤位階
     mkt_score = 0
     mkt_reasons = []
     if df_market is not None and not df_market.empty:
@@ -1329,7 +1458,6 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
             mkt_score += 8
             mkt_reasons.append("大盤季線多頭架構 (20MA > 60MA)")
 
-    # 技術量價
     tech_score = 0
     tech_reasons = []
     vol_ratio = safe_float(last_stk['Volume']) / (safe_float(last_stk['Vol_MA5']) + 1e-9)
@@ -1371,7 +1499,6 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
 
     total_score = min(max(total_score, 0), 100)
 
-    # 防守停損與多空准入
     ma20_val = safe_float(last_stk['MA20'], close * 0.96)
     if close >= ma20_val:
         raw_stop = max(close - 2.0 * atr_val, ma20_val - 0.5 * atr_val)
@@ -1563,55 +1690,117 @@ if "etf_category_filter" not in st.session_state:
     st.session_state.etf_category_filter = "全部"
 
 user_memory = get_user_data()
+current_briefing = load_market_briefing()
 
 # ----------------- 頂部導航與完整功能暨版本說明書 -----------------
 st.title("📱 股期決策旗艦站 (跨市場機構版)")
 
+# 👤 個人專屬空間狀態列與快速切換器
+with st.expander(f"👤 當前使用者：【{st.session_state.current_user}】（點此切換使用者／管理個人資金與備份）", expanded=False):
+    st.caption("每位使用者擁有完全獨立的常用股票、查詢歷史、預設操作本金與個人看盤筆記，彼此互不干擾。")
+    u_c1, u_c2 = st.columns([2.2, 1.8])
+    with u_c1:
+        known_users = get_registered_user_list()
+        new_or_switch_uid = st.text_input("輸入要切換或新建的使用者名稱", value=st.session_state.current_user, key="switch_uid_input")
+    with u_c2:
+        st.write("")
+        if st.button("🔄 立即切換使用者", type="primary", use_container_width=True, key="btn_switch_uid"):
+            target_u = new_or_switch_uid.strip()
+            if target_u:
+                st.session_state.current_user = target_u
+                if "user_data" in st.session_state:
+                    del st.session_state["user_data"]
+                st.rerun()
+
+    if len(known_users) > 1:
+        st.caption(f"📋 已建立之使用者檔案：`{'`、`'.join(known_users)}`")
+
+    st.markdown("#### 💰 個人預設風控本金與筆記設定（自動綁定您的帳號）")
+    p_c1, p_c2, p_c3 = st.columns(3)
+    with p_c1:
+        u_cap_tw = st.number_input("台股預設本金(NTD)", value=int(user_memory.get("capital_tw", 1000000)), step=100000, key="prof_cap_tw")
+    with p_c2:
+        u_cap_us = st.number_input("美股預設本金(USD)", value=int(user_memory.get("capital_us", 50000)), step=5000, key="prof_cap_us")
+    with p_c3:
+        u_risk = st.number_input("單筆風險(%)", min_value=0.5, max_value=5.0, value=float(user_memory.get("risk_pct", 1.0)), step=0.1, key="prof_risk")
+
+    u_note = st.text_area("📝 個人專屬看盤備忘錄", value=user_memory.get("personal_note", ""), height=68, key="prof_note")
+    if st.button("💾 儲存個人專屬設定", use_container_width=True, key="btn_save_profile"):
+        user_memory["capital_tw"] = u_cap_tw
+        user_memory["capital_us"] = u_cap_us
+        user_memory["risk_pct"] = u_risk
+        user_memory["personal_note"] = u_note
+        save_user_data()
+        st.success(f"已儲存【{st.session_state.current_user}】的專屬參數！")
+
+    with st.expander("📦 匯出 / 匯入個人設定備份碼（防雲端休眠重置）", expanded=False):
+        backup_str = json.dumps(user_memory, ensure_ascii=False)
+        st.code(backup_str, language="json")
+        restore_str = st.text_input("貼上備份碼一鍵還原", placeholder='{"tw_favorites": ...}', key="restore_json_in")
+        if st.button("📥 確認還原個人設定", key="btn_restore_json"):
+            try:
+                restored = json.loads(restore_str)
+                if isinstance(restored, dict):
+                    st.session_state.user_data.update(restored)
+                    save_user_data()
+                    st.success("個人資料已成功還原！")
+                    st.rerun()
+            except Exception:
+                st.error("備份碼格式不正確，請確認複製完整。")
+
 with st.expander("📘 點此查看【系統現行版本完整功能清單與版本更新日誌】", expanded=False):
     st.markdown("""
     ### 🌟 系統定位與核心架構
-    本系統為**跨市場（大盤即時看盤、台股、美股、台灣期貨、美股期貨、ETF、全球外匯）全維度量化決策平台**，整合臺灣證券交易所 (TWSE) 官方即時撮合、臺灣銀行官方牌告匯率與華爾街/本土法人共識報告資料庫，提供客觀透明之進出場點位與風險控管計算。
+    本系統為**跨市場（大盤即時看盤、台股、美股、台灣期貨、美股期貨、ETF、全球外匯）全維度量化決策平台**，整合臺灣證券交易所 (TWSE) 官方即時撮合、臺灣銀行官方牌告匯率、Google 財經外電 RSS 與華爾街/本土法人共識報告資料庫。
 
     ---
     ### 🛠️ 核心功能模組總覽
-    1. **📺 大盤與個股即時分時看盤室（V7.0 全新搭載）**：
-       - **Yahoo 股市級別即時分時走勢圖**：包含當日 1分/5分K 藍色價格折線、**昨收平盤灰色基準虛線**、底部紅綠分時成交量柱狀圖，並支援觸控十字游標檢視各分鐘高低價與量能。
-       - **大盤右側統計數據看板**：即時連線證交所揭露**加權指數（含金融）**、**加權指數（未含金融）**、**成交金額（億）**、**委買/委賣筆數與張數（含均買/均賣張數）**、**漲跌停與平盤家數**。
+    1. **🔥 關鍵市場戰情焦點導入 ＆ 即時總經外電快訊（V8.0 全新搭載）**：
+       - **置頂首席戰情公告欄**：展示關鍵市場決戰分析（如台股叩關 5 萬點洗盤與美國 CPI 數據決戰劇本），支援在系統內直接編輯、貼上導入最新戰情分析並即時同步。
+       - **Google 財經外電 RSS 即時引擎**：免 API Key 自動抓取最新「台股、美股、CPI、聯準會、台積電、費半」即時新聞頭條，並支援結合即時 VIX 恐慌指數與美債殖利率一鍵自動合成盤勢分析。
+    2. **👤 多使用者獨立記憶分流系統（V8.0 全新搭載）**：
+       - 登入或頂部狀態列可隨時切換「使用者代號／暱稱」（`user_profiles.json`），每位使用者獨立保存各自的**台股常用清單、美股常用清單、最近查詢紀錄、預設操作本金、單筆風險比例与個人看盤筆記**，並支援備份碼匯出/還原。
+    3. **📺 大盤與個股即時分時看盤室（V7.0）**：
+       - **Yahoo 股市級別即時分時走勢圖**：包含當日 1分/5分K 藍色價格折線、**昨收平盤灰色基準虛線**、底部紅綠分時成交量柱狀圖。
+       - **大盤右側統計數據看板**：揭露加權指數（含金融/未含金融）、成交金額（億）、委買/委賣筆數與張數（含均買/均賣張數）、漲跌停與平盤家數。
        - **個股即時五檔委買賣明細**：查詢台股時自動解析買進一～五檔、賣出一～五檔掛單價量與內外買賣力道比。
-       - **盤中 30 秒自動刷新開關**：勾選後自動更新看盤畫面，免手動重整。
-    2. **🔍 台股全維度深度體檢**：
-       - 直連 TWSE 撮合主機（成交量自動由「張」換算為「股」對齊均量），內建 10 大就地展開分析卡（含即時分時圖與五檔掛單、分析師目標價與下單執行卡、多空結論、開盤跳空、5/20/60MA 矩陣、基本面護城河、階梯停利 SOP、風控計算機、無前視偏誤回測、日K均線圖）。
-    3. **🇺🇸 美股全維度深度體檢**：
-       - 與台股 100% 同規格之全維度分析，直連華爾街機構目標價與評等，內建美股分時走勢、股數 (Shares) 風控計算機與低摩擦成本回測。
-    4. **⚡ 台灣期貨獨立專區**：
-       - 內建五大期貨契約規格：**大台 (WTX)**、**小台 (MTX)**、**微台 (WMT)**、**電子期 (TE)**、**金融期 (TF)**，含即時基差看板與保證金口數計算機。
+    4. **🔍 台股 ＆ 🇺🇸 美股 ＆ ⚡ 台灣期貨 全維度深度體檢**：
+       - 10 大就地展開分析卡：即時分時圖與五檔掛單、分析師目標價與下單執行卡、多空結論、開盤跳空、5/20/60MA 矩陣、基本面護城河、階梯停利 SOP、風控計算機、無前視偏誤回測、日K均線圖。
     5. **📈 美股期貨 ＆ 📊 ETF 策略專區 ＆ 💎 體質雷達 ＆ 📢 法說新聞 ＆ 💱 外匯大盤**：
-       - 涵蓋微那指/微標普等四大美指期、ETF 四大分類排行與微笑曲線試算、核心藍籌雙重濾網、即時新聞雙結構解析、臺銀官方匯率與日圓平倉風險監控。
+       - 涵蓋四大美指期、ETF 四大分類排行與微笑曲線試算、核心藍籌雙重濾網、臺銀官方匯率與日圓平倉風險監控。
 
     ---
     ### 📜 歷次版本更新日誌 (Version Changelog)
-    - **V7.0（即時分時看盤與大盤委買賣統計版 - 現行版本）**：
-      - 新增「📺 大盤即時看盤」專區，完整還原加權指數分時走勢圖（含昨收平盤虛線、底部紅綠量能柱）與大盤統計表（加權含金融/未含金融、委買委賣筆數/張數/均張、漲跌停家數）。
-      - 於台股、美股、台灣期貨診斷中全面嵌入「即時分時走勢圖」與「台股即時五檔委買委賣掛單表」，並加入盤中 30 秒自動刷新開關。
+    - **V8.0（關鍵戰情訊息導入 ＆ 多人獨立記憶分流版 - 現行版本）**：
+      - 新增置頂「🔥 關鍵市場戰情焦點」廣播卡與自訂戰情導入系統（`market_briefings.json`），結合 Google News 財經外電 RSS 即時爬蟲與量化盤勢自動合成引擎。
+      - 新增「👤 多使用者獨立記憶分流系統」（`user_profiles.json`），支援依使用者代號隔離自選股、查詢歷史、個人預設本金與看盤筆記，並支援 JSON 備份碼匯出/還原。
+    - **V7.0（即時分時看盤與大盤委買賣統計版）**：
+      - 新增「📺 大盤即時看盤」專區，完整還原加權指數分時走勢圖（含昨收平盤虛線、底部紅綠量能柱）與大盤委買委賣/漲跌家數統計表，個股嵌入五檔掛單明細與 30 秒自動刷新。
     - **V6.0（行動端雙欄鎖定與深度除錯版）**：
-      - 完成手機端 CSS 雙欄強制並排鎖定（`max-width: 100vw`），徹底消除單欄長條坍塌與右側視窗溢出問題。
-      - 新增全市場中英股票名稱智慧對照字典（`GLOBAL_STOCK_NAMES`）與 `user_history.json` 跨重整持久化記憶系統。
-      - 修復空方破線時「建議停損價高於現價」之數學矛盾；排除虧損公司負本益比誤判；相容新版 `yfinance` 巢狀新聞結構。
-    - **V5.0（跨市場獨立拆分版）**：
-      - 將「台股、美股、台灣期貨、美股期貨」拆分為獨立專區，新增台灣期貨智慧路由與保證金口數風控計算機。
-    - **V4.0（機構量化加固與防偏誤版）**：
-      - 移除公開預設密碼強制檢驗 Secrets、修正 `.TWO` 上櫃截斷錯誤、修正 TWSE 成交量「張轉股（×1000）」單位對齊。
-      - 重構無前視偏誤回測引擎（$T+1$ 開盤進場、單部位不重疊持倉、扣除交易稅費、精算真實峰谷最大回撤 MDD）。
-    - **V3.0（權威分析師與行動端就地展開版）**：
-      - 接入主流券商分析師共識目標價與評等，建立「精確下單執行卡」與就地展開式卡片介面。
-    - **V2.0 ～ V1.0（ETF 量化與基礎決策站初版）**：
-      - 建立 ETF 微笑曲線試算、台積電 ADR 溢價換算、技術指標引擎、TWSE 即時行情與臺銀牌告匯率串接。
+      - 完成手機端 CSS 雙欄強制並排鎖定（`max-width: 100vw`），新增全市場中英股名智慧對照字典，修復空方破線停損價矛盾與負本益比誤判。
+    - **V5.0 ～ V1.0（跨市場拆分、機構回測防偏誤、分析師共識與基礎決策站）**：
+      - 拆分台股/美股/台期/美期獨立專區、建立無前視偏誤回測引擎（$T+1$ 開盤進場與真實 MDD）、接入華爾街/本土券商共識目標價與臺銀官方匯率。
     """)
+
+# 🔥 置頂關鍵市場戰情焦點廣播卡 (隨時展示最重要總經與盤勢指引)
+st.markdown(f"""
+<div class="macro-alert-card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.3rem;">
+        <b style="color:#e53935; font-size:1.0rem;">{current_briefing['title']}</b>
+    </div>
+    <div style="font-size:0.9rem; opacity:0.95;">
+        {current_briefing['content'].replace(chr(10), '<br>')}
+    </div>
+    <div style="font-size:0.78rem; color:#777; margin-top:0.4rem; text-align:right;">
+        發布單位：{current_briefing['author']} ｜ 更新時間：{current_briefing['updated_at']}
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 # 置頂大盤即時分時看盤室按鈕 + 盤中自動更新開關
 top_c1, top_c2 = st.columns([1.4, 1.0])
 with top_c1:
-    if st.button("📺 大盤即時看盤 (分時走勢/委買賣)", type="primary" if st.session_state.main_mode == "live_watch" else "secondary", use_container_width=True, key="m_nav_live_watch"):
+    if st.button("📺 大盤即時看盤 (分時/戰情)", type="primary" if st.session_state.main_mode == "live_watch" else "secondary", use_container_width=True, key="m_nav_live_watch"):
         st.session_state.main_mode = "live_watch"
         st.rerun()
 with top_c2:
@@ -1650,7 +1839,7 @@ with r3_c2:
 
 r4_c1, r4_c2 = st.columns(2)
 with r4_c1:
-    if st.button("📢 法說消息", type="primary" if st.session_state.main_mode == "events" else "secondary", use_container_width=True, key="m_nav_events"):
+    if st.button("📢 法說與戰情導入", type="primary" if st.session_state.main_mode == "events" else "secondary", use_container_width=True, key="m_nav_events"):
         st.session_state.main_mode = "events"
         st.rerun()
 with r4_c2:
@@ -1668,11 +1857,10 @@ df_sox = fetch_and_calc("^SOX")
 df_spx = fetch_and_calc("^GSPC")
 global_forex = analyze_forex_data()
 
-# ================= 模式 0：📺 大盤即時分時看盤室 (完整重現 Yahoo 股市看盤介面) =================
+# ================= 模式 0：📺 大盤即時分時看盤室 =================
 if st.session_state.main_mode == "live_watch":
     dash = fetch_twse_market_dashboard()
 
-    # 若證交所 MIS 休市或未回傳點位，以 df_market 最新收盤自動補齊
     if dash["twii_price"] <= 0 and df_market is not None and len(df_market) >= 2:
         last_m = df_market.iloc[-1]
         prev_m = df_market.iloc[-2]
@@ -1689,12 +1877,13 @@ if st.session_state.main_mode == "live_watch":
     if st.button("🔄 立即刷新即時走勢與大盤統計", use_container_width=True, key="btn_refresh_live_watch"):
         fetch_twse_market_dashboard.clear()
         fetch_intraday_series.clear()
+        fetch_live_macro_rss.clear()
         st.rerun()
 
-    # 1. 渲染即時分時走勢圖 (藍色折線 + 昨收平盤虛線 + 紅綠量能柱)
+    # 1. 渲染即時分時走勢圖
     render_intraday_chart_widget("^TWII", title_name="加權指數 (^TWII)")
 
-    # 2. 渲染右側/下方 Yahoo 股市風格大盤統計明細表
+    # 2. 渲染 Yahoo 股市風格大盤統計明細表
     st.markdown("### 📊 大盤即時委買委賣與漲跌家數統計")
 
     tw_cls = "tw-up" if dash["twii_chg"] > 0 else ("tw-down" if dash["twii_chg"] < 0 else "tw-flat")
@@ -1791,7 +1980,16 @@ if st.session_state.main_mode == "live_watch":
         </div>
     </div>
     """, unsafe_allow_html=True)
-    st.caption("註：成交金額與委買委賣統計直連臺灣證券交易所 (TWSE MIS) 官方即時接口，非盤中時段部份委買賣欄位將顯示結算中。")
+
+    # 3. 置底即時總經與台美股外電快訊
+    st.write("---")
+    st.markdown("### 🌐 即時市場焦點與總經快訊 (Google 財經即時連線)")
+    live_rss = fetch_live_macro_rss("台股 OR 費半 OR CPI OR 聯準會 OR 台積電")
+    if live_rss:
+        for r_item in live_rss[:5]:
+            st.markdown(f"• **[{r_item['title']}]({r_item['link']})** — `{r_item['source']}` ({r_item['pub_date']})")
+    else:
+        st.caption("目前暫無即時外電快訊。")
 
 # ================= 模組共用渲染器 (內建分時走勢與五檔委買賣明細) =================
 def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallback_warning=None, ticker_raw=None):
@@ -1799,7 +1997,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
     risk_unit = max(res['close'] - res['stop_loss'], res['close'] * 0.015)
     target_1 = res['close'] + (1.5 * risk_unit)
     an_data = res['analyst_data']
-    stable_key_suffix = f"{mode_type}_{ticker_raw or 'default'}"
+    stable_key_suffix = f"{mode_type}_{ticker_raw or 'default'}_{st.session_state.current_user}"
 
     if mode_type == "futures":
         currency_sym = "點"
@@ -1817,7 +2015,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
 
     disp_header = get_stock_display_label(ticker_raw, is_fav=False) if ticker_raw else ""
     if disp_header:
-        st.markdown(f"**📌 當前診斷標的：`{disp_header}`**")
+        st.markdown(f"**📌 當前診斷標的：`{disp_header}`** ｜ 👤 操盤手：`{st.session_state.current_user}`")
 
     if res.get("live_info"):
         status_badge = res['live_info'].get('status_label', '⚪ 歷史報價')
@@ -1827,12 +2025,11 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
     elif mode_type == "us":
         st.caption(f"⚡ **美股即時行情連線** ｜ 幣別：USD ｜ 資料更新時序完整")
 
-    # 常用標的即時收藏/取消收藏按鈕
     if mode_type in ("tw", "us") and ticker_raw:
         m_key = "tw" if mode_type == "tw" else "us"
         cur_favs = user_memory.get(f"{m_key}_favorites", [])
         is_fav = ticker_raw in cur_favs
-        fav_label = "⭐ 已加入常用清單 (點此移出)" if is_fav else "☆ 收藏至常用股票清單"
+        fav_label = f"⭐ 已加入【{st.session_state.current_user}】的常用清單 (點此移出)" if is_fav else f"☆ 收藏至【{st.session_state.current_user}】的常用清單"
         if st.button(fav_label, use_container_width=True, key=f"btn_fav_toggle_{stable_key_suffix}"):
             toggle_favorite_stock(m_key, ticker_raw)
             st.rerun()
@@ -1846,14 +2043,13 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
     risk_pct = (risk_unit / res['close']) * 100
     c4.metric("最大預期風險", f"{risk_pct:.2f}%")
 
-    # 0. V7.0 新增：即時分時走勢圖 & 台股五檔委買賣明細
+    # 0. 即時分時走勢圖 & 台股五檔委買賣明細
     with st.expander("📺 【即時分時走勢圖 (含昨收平盤線) ＆ 五檔委買賣明細】", expanded=True):
         chart_ticker = "WTX=F" if mode_type == "futures" else (ticker_raw or "2330.TW")
         if mode_type == "futures" and df_futures_bench is None:
             chart_ticker = "^TWII"
         render_intraday_chart_widget(chart_ticker, title_name=disp_header or chart_ticker)
 
-        # 若為台股且有 TWSE 五檔掛單明細，渲染五檔委買委賣表與力道條
         live_info = res.get("live_info")
         if live_info and live_info.get("bid_prices") and live_info.get("ask_prices"):
             st.markdown("#### 📋 證交所即時五檔委買／委賣掛單明細")
@@ -1988,25 +2184,26 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         - **移動停利（Trailing Stop）**：其餘部位收盤跌破 5 日線全數獲利了結。
         """)
 
-    # 7. 部位風控計算機
-    with st.expander(f"💰 【部位風控與建議{unit_name}計算機】", expanded=False):
+    # 7. 部位風控計算機 (自動讀取該使用者儲存的預設本金與風險比例)
+    with st.expander(f"💰 【部位風控與建議{unit_name}計算機（已載入 {st.session_state.current_user} 專屬參數）】", expanded=False):
         col_cap, col_risk = st.columns(2)
         with col_cap:
             if mode_type == "futures":
-                default_cap = 1000000
+                default_cap = int(user_memory.get("capital_tw", 1000000))
                 cap_step = 100000
                 cap_label = "期貨專戶保證金餘額 (NTD)"
             elif mode_type == "us":
-                default_cap = 50000
+                default_cap = int(user_memory.get("capital_us", 50000))
                 cap_step = 5000
                 cap_label = "總操作資金 (USD)"
             else:
-                default_cap = 1000000
+                default_cap = int(user_memory.get("capital_tw", 1000000))
                 cap_step = 100000
                 cap_label = "總操作資金 (NTD)"
             total_capital = st.number_input(cap_label, value=default_cap, step=cap_step, key=f"calc_cap_{stable_key_suffix}")
         with col_risk:
-            risk_tolerance = st.slider("單筆最大承受損失比率 (%)", min_value=0.5, max_value=3.0, value=1.0, step=0.1, key=f"calc_risk_{stable_key_suffix}")
+            default_r = float(user_memory.get("risk_pct", 1.0))
+            risk_tolerance = st.slider("單筆最大承受損失比率 (%)", min_value=0.5, max_value=5.0, value=min(max(default_r, 0.5), 5.0), step=0.1, key=f"calc_risk_{stable_key_suffix}")
 
         max_risk_dollar = total_capital * (risk_tolerance / 100.0)
 
@@ -2070,10 +2267,10 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
 
 # ================= 模式 1：🔍 台股診斷 =================
 elif st.session_state.main_mode == "tw_stock":
-    st.subheader("🔍 台股全維度深度體檢")
+    st.subheader(f"🔍 台股全維度深度體檢（👤 {st.session_state.current_user}）")
 
     tw_favs = user_memory.get("tw_favorites", ["2330.TW", "2454.TW", "2317.TW", "0050.TW"])
-    st.caption("⭐ **我的常用股票清單**（點選一秒自動診斷）：")
+    st.caption(f"⭐ **【{st.session_state.current_user}】的常用股票清單**（點選一秒自動診斷）：")
 
     fav_cols = st.columns(2)
     for idx, fav_code in enumerate(tw_favs[:6]):
@@ -2087,7 +2284,7 @@ elif st.session_state.main_mode == "tw_stock":
 
     tw_recents = [r for r in user_memory.get("tw_recent", []) if r not in tw_favs][:4]
     if tw_recents:
-        st.caption("🕒 **最近查詢紀錄**：")
+        st.caption(f"🕒 **【{st.session_state.current_user}】的最近查詢紀錄**：")
         rec_cols = st.columns(2)
         for r_idx, r_code in enumerate(tw_recents):
             col_rec_target = rec_cols[r_idx % 2]
@@ -2112,7 +2309,7 @@ elif st.session_state.main_mode == "tw_stock":
     with col_btn:
         exec_clicked = st.button("🚀 診斷台股", type="primary", use_container_width=True, key="run_tw_btn")
 
-    with st.expander("⚙️ 管理我的台股常用清單", expanded=False):
+    with st.expander(f"⚙️ 管理【{st.session_state.current_user}】的台股常用清單", expanded=False):
         col_m1, col_m2 = st.columns([2.4, 1.6])
         new_fav_in = col_m1.text_input("新增常用代碼", placeholder="例：2603.TW", key="new_tw_fav_in")
         if col_m2.button("➕ 新增至常用", use_container_width=True, key="btn_add_tw_fav"):
@@ -2125,7 +2322,7 @@ elif st.session_state.main_mode == "tw_stock":
                 st.success(f"已加入 {clean_new_fav}！")
                 st.rerun()
 
-        st.caption("點擊下方按鈕可從常用清單中移出：")
+        st.caption("點擊下方按鈕可從您的個人常用清單中移出：")
         del_cols = st.columns(2)
         for d_idx, d_code in enumerate(user_memory["tw_favorites"]):
             del_label = f"❌ {get_stock_display_label(d_code, is_fav=False)}"
@@ -2156,10 +2353,10 @@ elif st.session_state.main_mode == "tw_stock":
 
 # ================= 模式 2：🇺🇸 美股診斷 =================
 elif st.session_state.main_mode == "us_stock":
-    st.subheader("🇺🇸 美股全維度深度體檢 (全功能同規格)")
+    st.subheader(f"🇺🇸 美股全維度深度體檢（👤 {st.session_state.current_user}）")
 
     us_favs = user_memory.get("us_favorites", ["NVDA", "AAPL", "MSFT", "TSLA"])
-    st.caption("⭐ **我的常用美股清單**（點選一秒自動診斷）：")
+    st.caption(f"⭐ **【{st.session_state.current_user}】的常用美股清單**（點選一秒自動診斷）：")
 
     fav_u_cols = st.columns(2)
     for idx, fav_u_code in enumerate(us_favs[:6]):
@@ -2173,7 +2370,7 @@ elif st.session_state.main_mode == "us_stock":
 
     us_recents = [r for r in user_memory.get("us_recent", []) if r not in us_favs][:4]
     if us_recents:
-        st.caption("🕒 **最近查詢紀錄**：")
+        st.caption(f"🕒 **【{st.session_state.current_user}】的最近查詢紀錄**：")
         rec_u_cols = st.columns(2)
         for ru_idx, ru_code in enumerate(us_recents):
             col_rec_u = rec_u_cols[ru_idx % 2]
@@ -2200,7 +2397,7 @@ elif st.session_state.main_mode == "us_stock":
 
     cleaned_us_ticker = raw_us_input.strip().upper()
 
-    with st.expander("⚙️ 管理我的美股常用清單", expanded=False):
+    with st.expander(f"⚙️ 管理【{st.session_state.current_user}】的美股常用清單", expanded=False):
         col_mu1, col_mu2 = st.columns([2.4, 1.6])
         new_u_fav_in = col_mu1.text_input("新增美股代碼", placeholder="例：AMD", key="new_us_fav_in")
         if col_mu2.button("➕ 新增至常用", use_container_width=True, key="btn_add_us_fav"):
@@ -2235,7 +2432,7 @@ elif st.session_state.main_mode == "us_stock":
         r_us, df_stk_us, cur_ut = st.session_state.analysis_cache_us
         render_analysis_view(r_us, df_stk_us, mode_type="us", ticker_raw=cur_ut)
 
-# ================= 模式 3：⚡ 台灣期貨 (智慧路由版) =================
+# ================= 模式 3：⚡ 台灣期貨 =================
 elif st.session_state.main_mode == "tw_futures":
     st.subheader("⚡ 台灣期貨全維度專區 (優質契約・期顧共識・基差診斷)")
     st.caption("內建熱門台期契約池・自選查詢・多空目標壓力與保證金風控")
@@ -2526,16 +2723,75 @@ elif st.session_state.main_mode == "market":
                 for err in failed_stocks:
                     st.write(f"• {err}")
 
-# ================= 模式 7：📢 法說會日程與重大訊息 =================
+# ================= 模式 7：📢 戰情訊息導入 ＆ 法說會與即時外電 =================
 elif st.session_state.main_mode == "events":
-    st.subheader("📢 重要法說會日程 ＆ 即時重大訊息速查")
-    st.caption("支援輸入台股代號（如 2330 或 2330.TW）與美股代號（如 NVDA）")
+    st.subheader("📢 關鍵市場戰情導入 ＆ 即時外電／法說會速查")
 
+    # 1. 關鍵市場分析訊息導入與編輯面板
+    with st.expander("✍️ 【導入／更新置頂關鍵市場戰情分析訊息】", expanded=True):
+        st.caption("您可將最新的總經數據預警（如 CPI、非農、FOMC 決議）或盤勢關鍵分析貼於下方，點擊發布後將置頂於全站最上方。")
+        b_title_in = st.text_input("戰情標題", value=current_briefing["title"], key="brief_title_in")
+        b_content_in = st.text_area("戰情詳細分析內容", value=current_briefing["content"], height=140, key="brief_content_in")
+        b_author_in = st.text_input("發布者署名", value=st.session_state.current_user, key="brief_author_in")
+
+        b_btn1, b_btn2 = st.columns(2)
+        with b_btn1:
+            if st.button("🚀 發布並更新置頂戰情", type="primary", use_container_width=True, key="btn_pub_brief"):
+                save_market_briefing(b_title_in, b_content_in, b_author_in)
+                st.success("已成功更新全站置頂戰情焦點！")
+                st.rerun()
+        with b_btn2:
+            if st.button("🤖 結合即時指標自動生成草稿", use_container_width=True, key="btn_auto_synth_brief"):
+                tw_p = df_market.iloc[-1]['Close'] if df_market is not None else 0
+                tw_ma20 = df_market['MA20'].iloc[-1] if df_market is not None else 0
+                sox_chg = ((df_sox['Close'].iloc[-1] - df_sox['Close'].iloc[-2]) / df_sox['Close'].iloc[-2] * 100) if (df_sox is not None and len(df_sox) >= 2) else 0
+                synth_title = f"🔥 即時量化戰情：台股現報 {tw_p:,.0f} 點 vs 費半連動 ({sox_chg:+.2f}%) 關鍵位階解析"
+                synth_body = (
+                    f"台股加權指數目前位於 {tw_p:,.2f} 點（月線 20MA 支撐/壓力位階：{tw_ma20:,.2f} 點），"
+                    f"美股費城半導體指數近期變動 {sox_chg:+.2f}%，新台幣匯率現報 {global_forex.get('twd_rate') or 32.0:.2f}。\n\n"
+                    f"📌 **關鍵總經與操作劇本**：\n"
+                    f"• Tonight (10/14 20:30) 美國 CPI 數據為短線多空分水嶺（市場預期整體 CPI 3.6%~3.7%、核心 CPI 2.4%）。\n"
+                    f"• 若數據溫和符合預期且指數守穩 {tw_ma20:,.0f} 點生命線，洗盤後有望迎來技術面反彈；反之若跌破防守位則嚴格控管部位。"
+                )
+                save_market_briefing(synth_title, synth_body, st.session_state.current_user)
+                st.rerun()
+
+    st.write("---")
+
+    # 2. Google 財經外電 RSS 即時主題快訊检索
+    st.markdown("### 🌐 總經與市場焦點外電即時導入 (Google News RSS)")
+    rss_q1, rss_q2 = st.columns(2)
+    with rss_q1:
+        if st.button("🔥 台股 / 費半 / 台積電", use_container_width=True, key="rss_btn_tw"):
+            st.session_state.rss_query = "台股 OR 費半 OR 台積電"
+    with rss_q2:
+        if st.button("🇺🇸 美國 CPI / 聯準會 / 美股", use_container_width=True, key="rss_btn_us"):
+            st.session_state.rss_query = "美國 CPI OR 聯準會 OR 那斯達克"
+
+    cur_rss_q = st.session_state.get("rss_query", "台股 OR 美國 CPI OR 費半 OR 台積電")
+    rss_items = fetch_live_macro_rss(cur_rss_q)
+    if rss_items:
+        for idx_r, r_it in enumerate(rss_items):
+            with st.container():
+                st.markdown(f"**[{r_it['title']}]({r_it['link']})**")
+                c_r1, c_r2 = st.columns([2.5, 1.5])
+                c_r1.caption(f"來源：{r_it['source']} ｜ {r_it['pub_date']}")
+                if c_r2.button("📌 導入為置頂戰情", key=f"pin_rss_{idx_r}", use_container_width=True):
+                    save_market_briefing(
+                        f"🔥 市場快訊導入：{r_it['title'][:28]}...",
+                        f"【外電焦點】{r_it['title']}（來源：{r_it['source']}）\n\n請密切留意該事件對台指期夜盤、美股科技股與次日開盤跳空幅度之連動影響。",
+                        st.session_state.current_user
+                    )
+                    st.rerun()
+                st.write("---")
+
+    # 3. 個股最新重大訊息速查
+    st.markdown("### 🔍 個股最新重大訊息速查")
     col_n_input, col_n_btn = st.columns([2.4, 1.6])
     with col_n_input:
         news_ticker = st.text_input("輸入查詢標的代碼", value="2330.TW", label_visibility="collapsed", key="news_search_input")
     with col_n_btn:
-        news_clicked = st.button("📰 查重大訊息", type="primary", use_container_width=True, key="fetch_news_btn")
+        news_clicked = st.button("📰 查個股新聞", type="primary", use_container_width=True, key="fetch_news_btn")
 
     if news_clicked:
         clean_news_t = news_ticker.strip().upper()
