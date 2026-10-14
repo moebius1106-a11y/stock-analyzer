@@ -192,7 +192,6 @@ try:
 except Exception:
     ACCESS_PASSWORD = None
 
-# 支援在 Secrets 中設定個別使用者專屬密碼，例如 [USERS] Alex = "pass123"
 try:
     CUSTOM_USERS_DICT = dict(st.secrets.get("USERS", {}))
 except Exception:
@@ -225,7 +224,6 @@ if not st.session_state.authenticated:
 
     if st.button("🔓 登入個人決策空間", type="primary", use_container_width=True, key="login_btn"):
         clean_uid = user_id_input.strip() if user_id_input.strip() else "預設操盤手"
-        # 驗證邏輯：支援個別帳號密碼 (CUSTOM_USERS_DICT) 或 全域通行碼 (ACCESS_PASSWORD)
         is_valid = False
         if clean_uid in CUSTOM_USERS_DICT and pwd == str(CUSTOM_USERS_DICT[clean_uid]):
             is_valid = True
@@ -235,7 +233,6 @@ if not st.session_state.authenticated:
         if is_valid:
             st.session_state.authenticated = True
             st.session_state.current_user = clean_uid
-            # 切換使用者時強制重新載入該使用者的專屬記憶
             if "user_data" in st.session_state:
                 del st.session_state["user_data"]
             st.rerun()
@@ -311,7 +308,7 @@ def get_stock_display_label(ticker: str, is_fav=False):
         return f"{prefix}{name} ({clean_code})"
     return f"{prefix}{clean_code}"
 
-# ----------------- V8.0 多使用者分流記憶引擎 (Multi-User Profile Isolation) -----------------
+# ----------------- V8.0 多使用者分流記憶引擎 -----------------
 PROFILES_FILE = "user_profiles.json"
 LEGACY_HISTORY_FILE = "user_history.json"
 
@@ -340,7 +337,6 @@ def load_all_profiles():
         except Exception:
             pass
     elif os.path.exists(LEGACY_HISTORY_FILE):
-        # 自動無縫遷移舊版單一設定檔至「預設操盤手」
         try:
             with open(LEGACY_HISTORY_FILE, "r", encoding="utf-8") as f:
                 legacy = json.load(f)
@@ -451,9 +447,6 @@ def save_market_briefing(title: str, content: str, author: str):
 
 @st.cache_data(ttl=180)
 def fetch_live_macro_rss(query_str: str = "台股 OR 美股 OR CPI OR 聯準會 OR 台積電 OR 費半"):
-    """
-    透過 Google News RSS 擷取台灣與國際最新宏觀財經焦點頭條（免 API Key、即時更新）
-    """
     encoded_q = quote(query_str)
     url = f"https://news.google.com/rss/search?q={encoded_q}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -517,7 +510,7 @@ def normalize_ticker(ticker: str):
         return t[:-3], "tse"
     return t, "us"
 
-# ----------------- 權威 API 1：臺灣證券交易所官方即時行情 (含五檔委買賣解析) -----------------
+# ----------------- 權威 API 1：臺灣證券交易所官方即時行情 -----------------
 def fetch_twse_realtime(ticker: str):
     code, market = normalize_ticker(ticker)
     if market in ("us", "futures"):
@@ -1757,9 +1750,9 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與版
     ### 🛠️ 核心功能模組總覽
     1. **🔥 關鍵市場戰情焦點導入 ＆ 即時總經外電快訊（V8.0 全新搭載）**：
        - **置頂首席戰情公告欄**：展示關鍵市場決戰分析（如台股叩關 5 萬點洗盤與美國 CPI 數據決戰劇本），支援在系統內直接編輯、貼上導入最新戰情分析並即時同步。
-       - **Google 財經外電 RSS 即時引擎**：免 API Key 自動抓取最新「台股、美股、CPI、聯準會、台積電、費半」即時新聞頭條，並支援結合即時 VIX 恐慌指數與美債殖利率一鍵自動合成盤勢分析。
+       - **Google 財經外電 RSS 即時引擎**：免 API Key 自動抓取最新「台股、美股、CPI、聯準會、台積電、費半」即時新聞頭條，並支援結合即時指標一鍵自動合成盤勢分析。
     2. **👤 多使用者獨立記憶分流系統（V8.0 全新搭載）**：
-       - 登入或頂部狀態列可隨時切換「使用者代號／暱稱」（`user_profiles.json`），每位使用者獨立保存各自的**台股常用清單、美股常用清單、最近查詢紀錄、預設操作本金、單筆風險比例与個人看盤筆記**，並支援備份碼匯出/還原。
+       - 登入或頂部狀態列可隨時切換「使用者代號／暱稱」（`user_profiles.json`），每位使用者獨立保存各自的**台股常用清單、美股常用清單、最近查詢紀錄、預設操作本金、單筆風險比例與個人看盤筆記**，並支援備份碼匯出/還原。
     3. **📺 大盤與個股即時分時看盤室（V7.0）**：
        - **Yahoo 股市級別即時分時走勢圖**：包含當日 1分/5分K 藍色價格折線、**昨收平盤灰色基準虛線**、底部紅綠分時成交量柱狀圖。
        - **大盤右側統計數據看板**：揭露加權指數（含金融/未含金融）、成交金額（億）、委買/委賣筆數與張數（含均買/均賣張數）、漲跌停與平盤家數。
@@ -1774,6 +1767,7 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與版
     - **V8.0（關鍵戰情訊息導入 ＆ 多人獨立記憶分流版 - 現行版本）**：
       - 新增置頂「🔥 關鍵市場戰情焦點」廣播卡與自訂戰情導入系統（`market_briefings.json`），結合 Google News 財經外電 RSS 即時爬蟲與量化盤勢自動合成引擎。
       - 新增「👤 多使用者獨立記憶分流系統」（`user_profiles.json`），支援依使用者代號隔離自選股、查詢歷史、個人預設本金與看盤筆記，並支援 JSON 備份碼匯出/還原。
+      - 修復 `render_analysis_view` 放置位置截斷 `if/elif` 語法鏈的問題。
     - **V7.0（即時分時看盤與大盤委買賣統計版）**：
       - 新增「📺 大盤即時看盤」專區，完整還原加權指數分時走勢圖（含昨收平盤虛線、底部紅綠量能柱）與大盤委買委賣/漲跌家數統計表，個股嵌入五檔掛單明細與 30 秒自動刷新。
     - **V6.0（行動端雙欄鎖定與深度除錯版）**：
@@ -1782,7 +1776,7 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與版
       - 拆分台股/美股/台期/美期獨立專區、建立無前視偏誤回測引擎（$T+1$ 開盤進場與真實 MDD）、接入華爾街/本土券商共識目標價與臺銀官方匯率。
     """)
 
-# 🔥 置頂關鍵市場戰情焦點廣播卡 (隨時展示最重要總經與盤勢指引)
+# 🔥 置頂關鍵市場戰情焦點廣播卡
 st.markdown(f"""
 <div class="macro-alert-card">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.3rem;">
@@ -1857,141 +1851,7 @@ df_sox = fetch_and_calc("^SOX")
 df_spx = fetch_and_calc("^GSPC")
 global_forex = analyze_forex_data()
 
-# ================= 模式 0：📺 大盤即時分時看盤室 =================
-if st.session_state.main_mode == "live_watch":
-    dash = fetch_twse_market_dashboard()
-
-    if dash["twii_price"] <= 0 and df_market is not None and len(df_market) >= 2:
-        last_m = df_market.iloc[-1]
-        prev_m = df_market.iloc[-2]
-        dash["twii_price"] = safe_float(last_m["Close"])
-        dash["twii_yclose"] = safe_float(prev_m["Close"])
-        dash["twii_chg"] = dash["twii_price"] - dash["twii_yclose"]
-        dash["twii_pct"] = (dash["twii_chg"] / (dash["twii_yclose"] + 1e-9)) * 100.0
-        dash["twii_high"] = safe_float(last_m["High"])
-        dash["twii_low"] = safe_float(last_m["Low"])
-
-    st.subheader("📺 台股加權指數・即時分時走勢與大盤統計看盤室")
-    st.caption(f"資料時間：{dash['data_time']} ｜ 點選下方「🔄 立即刷新報價」或勾選上方「30秒自動刷新」可即時追蹤盤勢")
-
-    if st.button("🔄 立即刷新即時走勢與大盤統計", use_container_width=True, key="btn_refresh_live_watch"):
-        fetch_twse_market_dashboard.clear()
-        fetch_intraday_series.clear()
-        fetch_live_macro_rss.clear()
-        st.rerun()
-
-    # 1. 渲染即時分時走勢圖
-    render_intraday_chart_widget("^TWII", title_name="加權指數 (^TWII)")
-
-    # 2. 渲染 Yahoo 股市風格大盤統計明細表
-    st.markdown("### 📊 大盤即時委買委賣與漲跌家數統計")
-
-    tw_cls = "tw-up" if dash["twii_chg"] > 0 else ("tw-down" if dash["twii_chg"] < 0 else "tw-flat")
-    tw_sign = "+" if dash["twii_chg"] > 0 else ""
-
-    ex_cls = "tw-up" if dash["ex_fin_chg"] > 0 else ("tw-down" if dash["ex_fin_chg"] < 0 else "tw-flat")
-    ex_sign = "+" if dash["ex_fin_chg"] > 0 else ""
-    ex_fin_str = (
-        f"<span class='{ex_cls}'>{dash['ex_fin_price']:,.2f} ({ex_sign}{dash['ex_fin_chg']:,.2f} / {ex_sign}{dash['ex_fin_pct']:.2f}%)</span>"
-        if dash["ex_fin_price"] > 0 else "<span>收盤結算中</span>"
-    )
-
-    otc_cls = "tw-up" if dash["otc_chg"] > 0 else ("tw-down" if dash["otc_chg"] < 0 else "tw-flat")
-    otc_sign = "+" if dash["otc_chg"] > 0 else ""
-    otc_str = (
-        f"<span class='{otc_cls}'>{dash['otc_price']:,.2f} ({otc_sign}{dash['otc_chg']:,.2f} / {otc_sign}{dash['otc_pct']:.2f}%)</span>"
-        if dash["otc_price"] > 0 else "<span>收盤結算中</span>"
-    )
-
-    turn_str = f"<b>{dash['turnover_billion']:,.2f} 億</b>" if dash["turnover_billion"] > 0 else "<b>結算中</b>"
-    bid_ord_str = f"<b>{dash['bid_orders']:,}</b>" if dash["bid_orders"] else "--"
-    ask_ord_str = f"<b>{dash['ask_orders']:,}</b>" if dash["ask_orders"] else "--"
-    trd_ord_str = f"<b>{dash['trade_orders']:,}</b>" if dash["trade_orders"] else "--"
-
-    bid_lot_str = (
-        f"<b>{dash['bid_lots']:,}</b> <span class='tw-up'>({dash['avg_bid_lots']} 張/筆)</span>"
-        if dash["bid_lots"] else "--"
-    )
-    ask_lot_str = (
-        f"<b>{dash['ask_lots']:,}</b> <span class='tw-down'>({dash['avg_ask_lots']} 張/筆)</span>"
-        if dash["ask_lots"] else "--"
-    )
-    trd_lot_str = f"<b>{dash['trade_lots']:,}</b>" if dash["trade_lots"] else "--"
-
-    up_str = (
-        f"<span class='tw-up'>{dash['up_count']} (漲停 {dash['limit_up']})</span>"
-        if dash["up_count"] is not None else "--"
-    )
-    dn_str = (
-        f"<span class='tw-down'>{dash['down_count']} (跌停 {dash['limit_down']})</span>"
-        if dash["down_count"] is not None else "--"
-    )
-    fl_str = f"<b>{dash['flat_count']}</b>" if dash["flat_count"] is not None else "--"
-
-    st.markdown(f"""
-    <div class="yahoo-stat-box">
-        <div class="yahoo-stat-row">
-            <span>加權指數 (含金融)</span>
-            <span class="{tw_cls}">{dash['twii_price']:,.2f} ({tw_sign}{dash['twii_chg']:,.2f} / {tw_sign}{dash['twii_pct']:.2f}%)</span>
-        </div>
-        <div class="yahoo-stat-row">
-            <span>加權指數 (未含金融)</span>
-            {ex_fin_str}
-        </div>
-        <div class="yahoo-stat-row">
-            <span>櫃買指數 (OTC)</span>
-            {otc_str}
-        </div>
-        <div class="yahoo-stat-row">
-            <span>大盤成交金額</span>
-            <span>{turn_str}</span>
-        </div>
-        <div class="yahoo-stat-row">
-            <span>委買筆數 / 委賣筆數</span>
-            <span>{bid_ord_str} / {ask_ord_str}</span>
-        </div>
-        <div class="yahoo-stat-row">
-            <span>大盤成交筆數</span>
-            <span>{trd_ord_str}</span>
-        </div>
-        <div class="yahoo-stat-row">
-            <span>委買張數 (均買)</span>
-            <span>{bid_lot_str}</span>
-        </div>
-        <div class="yahoo-stat-row">
-            <span>委賣張數 (均賣)</span>
-            <span>{ask_lot_str}</span>
-        </div>
-        <div class="yahoo-stat-row">
-            <span>大盤成交張數</span>
-            <span>{trd_lot_str}</span>
-        </div>
-        <div class="yahoo-stat-row">
-            <span>上漲家數 (含漲停)</span>
-            <span>{up_str}</span>
-        </div>
-        <div class="yahoo-stat-row">
-            <span>下跌家數 (含跌停)</span>
-            <span>{dn_str}</span>
-        </div>
-        <div class="yahoo-stat-row">
-            <span>平盤家數</span>
-            <span>{fl_str}</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # 3. 置底即時總經與台美股外電快訊
-    st.write("---")
-    st.markdown("### 🌐 即時市場焦點與總經快訊 (Google 財經即時連線)")
-    live_rss = fetch_live_macro_rss("台股 OR 費半 OR CPI OR 聯準會 OR 台積電")
-    if live_rss:
-        for r_item in live_rss[:5]:
-            st.markdown(f"• **[{r_item['title']}]({r_item['link']})** — `{r_item['source']}` ({r_item['pub_date']})")
-    else:
-        st.caption("目前暫無即時外電快訊。")
-
-# ================= 模組共用渲染器 (內建分時走勢與五檔委買賣明細) =================
+# ================= 模組共用渲染器 (放置於所有 if/elif 之前，確保語法鏈完整) =================
 def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallback_warning=None, ticker_raw=None):
     is_downtrend = res.get('is_breakdown', False) or (res['close'] < res['ma_status']['ma20_val'])
     risk_unit = max(res['close'] - res['stop_loss'], res['close'] * 0.015)
@@ -2184,7 +2044,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         - **移動停利（Trailing Stop）**：其餘部位收盤跌破 5 日線全數獲利了結。
         """)
 
-    # 7. 部位風控計算機 (自動讀取該使用者儲存的預設本金與風險比例)
+    # 7. 部位風控計算機
     with st.expander(f"💰 【部位風控與建議{unit_name}計算機（已載入 {st.session_state.current_user} 專屬參數）】", expanded=False):
         col_cap, col_risk = st.columns(2)
         with col_cap:
@@ -2264,6 +2124,139 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
                 valid_cols.append(c)
         chart_data = df_asset[valid_cols].dropna().tail(60)
         st.line_chart(chart_data)
+
+# ================= 模式 0：📺 大盤即時分時看盤室 =================
+if st.session_state.main_mode == "live_watch":
+    dash = fetch_twse_market_dashboard()
+
+    if dash["twii_price"] <= 0 and df_market is not None and len(df_market) >= 2:
+        last_m = df_market.iloc[-1]
+        prev_m = df_market.iloc[-2]
+        dash["twii_price"] = safe_float(last_m["Close"])
+        dash["twii_yclose"] = safe_float(prev_m["Close"])
+        dash["twii_chg"] = dash["twii_price"] - dash["twii_yclose"]
+        dash["twii_pct"] = (dash["twii_chg"] / (dash["twii_yclose"] + 1e-9)) * 100.0
+        dash["twii_high"] = safe_float(last_m["High"])
+        dash["twii_low"] = safe_float(last_m["Low"])
+
+    st.subheader("📺 台股加權指數・即時分時走勢與大盤統計看盤室")
+    st.caption(f"資料時間：{dash['data_time']} ｜ 點選下方「🔄 立即刷新報價」或勾選上方「30秒自動刷新」可即時追蹤盤勢")
+
+    if st.button("🔄 立即刷新即時走勢與大盤統計", use_container_width=True, key="btn_refresh_live_watch"):
+        fetch_twse_market_dashboard.clear()
+        fetch_intraday_series.clear()
+        fetch_live_macro_rss.clear()
+        st.rerun()
+
+    # 1. 渲染即時分時走勢圖
+    render_intraday_chart_widget("^TWII", title_name="加權指數 (^TWII)")
+
+    # 2. 渲染 Yahoo 股市風格大盤統計明細表
+    st.markdown("### 📊 大盤即時委買委賣與漲跌家數統計")
+
+    tw_cls = "tw-up" if dash["twii_chg"] > 0 else ("tw-down" if dash["twii_chg"] < 0 else "tw-flat")
+    tw_sign = "+" if dash["twii_chg"] > 0 else ""
+
+    ex_cls = "tw-up" if dash["ex_fin_chg"] > 0 else ("tw-down" if dash["ex_fin_chg"] < 0 else "tw-flat")
+    ex_sign = "+" if dash["ex_fin_chg"] > 0 else ""
+    ex_fin_str = (
+        f"<span class='{ex_cls}'>{dash['ex_fin_price']:,.2f} ({ex_sign}{dash['ex_fin_chg']:,.2f} / {ex_sign}{dash['ex_fin_pct']:.2f}%)</span>"
+        if dash["ex_fin_price"] > 0 else "<span>收盤結算中</span>"
+    )
+
+    otc_cls = "tw-up" if dash["otc_chg"] > 0 else ("tw-down" if dash["otc_chg"] < 0 else "tw-flat")
+    otc_sign = "+" if dash["otc_chg"] > 0 else ""
+    otc_str = (
+        f"<span class='{otc_cls}'>{dash['otc_price']:,.2f} ({otc_sign}{dash['otc_chg']:,.2f} / {otc_sign}{dash['otc_pct']:.2f}%)</span>"
+        if dash["otc_price"] > 0 else "<span>收盤結算中</span>"
+    )
+
+    turn_str = f"<b>{dash['turnover_billion']:,.2f} 億</b>" if dash["turnover_billion"] > 0 else "<b>結算中</b>"
+    bid_ord_str = f"<b>{dash['bid_orders']:,}</b>" if dash["bid_orders"] else "--"
+    ask_ord_str = f"<b>{dash['ask_orders']:,}</b>" if dash["ask_orders"] else "--"
+    trd_ord_str = f"<b>{dash['trade_orders']:,}</b>" if dash["trade_orders"] else "--"
+
+    bid_lot_str = (
+        f"<b>{dash['bid_lots']:,}</b> <span class='tw-up'>({dash['avg_bid_lots']} 張/筆)</span>"
+        if dash["bid_lots"] else "--"
+    )
+    ask_lot_str = (
+        f"<b>{dash['ask_lots']:,}</b> <span class='tw-down'>({dash['avg_ask_lots']} 張/筆)</span>"
+        if dash["ask_lots"] else "--"
+    )
+    trd_lot_str = f"<b>{dash['trade_lots']:,}</b>" if dash["trade_lots"] else "--"
+
+    up_str = (
+        f"<span class='tw-up'>{dash['up_count']} (漲停 {dash['limit_up']})</span>"
+        if dash["up_count"] is not None else "--"
+    )
+    dn_str = (
+        f"<span class='tw-down'>{dash['down_count']} (跌停 {dash['limit_down']})</span>"
+        if dash["down_count"] is not None else "--"
+    )
+    fl_str = f"<b>{dash['flat_count']}</b>" if dash["flat_count"] is not None else "--"
+
+    st.markdown(f"""
+    <div class="yahoo-stat-box">
+        <div class="yahoo-stat-row">
+            <span>加權指數 (含金融)</span>
+            <span class="{tw_cls}">{dash['twii_price']:,.2f} ({tw_sign}{dash['twii_chg']:,.2f} / {tw_sign}{dash['twii_pct']:.2f}%)</span>
+        </div>
+        <div class="yahoo-stat-row">
+            <span>加權指數 (未含金融)</span>
+            {ex_fin_str}
+        </div>
+        <div class="yahoo-stat-row">
+            <span>櫃買指數 (OTC)</span>
+            {otc_str}
+        </div>
+        <div class="yahoo-stat-row">
+            <span>大盤成交金額</span>
+            <span>{turn_str}</span>
+        </div>
+        <div class="yahoo-stat-row">
+            <span>委買筆數 / 委賣筆數</span>
+            <span>{bid_ord_str} / {ask_ord_str}</span>
+        </div>
+        <div class="yahoo-stat-row">
+            <span>大盤成交筆數</span>
+            <span>{trd_ord_str}</span>
+        </div>
+        <div class="yahoo-stat-row">
+            <span>委買張數 (均買)</span>
+            <span>{bid_lot_str}</span>
+        </div>
+        <div class="yahoo-stat-row">
+            <span>委賣張數 (均賣)</span>
+            <span>{ask_lot_str}</span>
+        </div>
+        <div class="yahoo-stat-row">
+            <span>大盤成交張數</span>
+            <span>{trd_lot_str}</span>
+        </div>
+        <div class="yahoo-stat-row">
+            <span>上漲家數 (含漲停)</span>
+            <span>{up_str}</span>
+        </div>
+        <div class="yahoo-stat-row">
+            <span>下跌家數 (含跌停)</span>
+            <span>{dn_str}</span>
+        </div>
+        <div class="yahoo-stat-row">
+            <span>平盤家數</span>
+            <span>{fl_str}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.write("---")
+    st.markdown("### 🌐 即時市場焦點與總經快訊 (Google 財經即時連線)")
+    live_rss = fetch_live_macro_rss("台股 OR 費半 OR CPI OR 聯準會 OR 台積電")
+    if live_rss:
+        for r_item in live_rss[:5]:
+            st.markdown(f"• **[{r_item['title']}]({r_item['link']})** — `{r_item['source']}` ({r_item['pub_date']})")
+    else:
+        st.caption("目前暫無即時外電快訊。")
 
 # ================= 模式 1：🔍 台股診斷 =================
 elif st.session_state.main_mode == "tw_stock":
@@ -2727,7 +2720,6 @@ elif st.session_state.main_mode == "market":
 elif st.session_state.main_mode == "events":
     st.subheader("📢 關鍵市場戰情導入 ＆ 即時外電／法說會速查")
 
-    # 1. 關鍵市場分析訊息導入與編輯面板
     with st.expander("✍️ 【導入／更新置頂關鍵市場戰情分析訊息】", expanded=True):
         st.caption("您可將最新的總經數據預警（如 CPI、非農、FOMC 決議）或盤勢關鍵分析貼於下方，點擊發布後將置頂於全站最上方。")
         b_title_in = st.text_input("戰情標題", value=current_briefing["title"], key="brief_title_in")
@@ -2750,7 +2742,7 @@ elif st.session_state.main_mode == "events":
                     f"台股加權指數目前位於 {tw_p:,.2f} 點（月線 20MA 支撐/壓力位階：{tw_ma20:,.2f} 點），"
                     f"美股費城半導體指數近期變動 {sox_chg:+.2f}%，新台幣匯率現報 {global_forex.get('twd_rate') or 32.0:.2f}。\n\n"
                     f"📌 **關鍵總經與操作劇本**：\n"
-                    f"• Tonight (10/14 20:30) 美國 CPI 數據為短線多空分水嶺（市場預期整體 CPI 3.6%~3.7%、核心 CPI 2.4%）。\n"
+                    f"• 今晚 (10/14 20:30) 美國 CPI 數據為短線多空分水嶺（市場預期整體 CPI 3.6%~3.7%、核心 CPI 2.4%）。\n"
                     f"• 若數據溫和符合預期且指數守穩 {tw_ma20:,.0f} 點生命線，洗盤後有望迎來技術面反彈；反之若跌破防守位則嚴格控管部位。"
                 )
                 save_market_briefing(synth_title, synth_body, st.session_state.current_user)
@@ -2758,7 +2750,6 @@ elif st.session_state.main_mode == "events":
 
     st.write("---")
 
-    # 2. Google 財經外電 RSS 即時主題快訊检索
     st.markdown("### 🌐 總經與市場焦點外電即時導入 (Google News RSS)")
     rss_q1, rss_q2 = st.columns(2)
     with rss_q1:
@@ -2785,7 +2776,6 @@ elif st.session_state.main_mode == "events":
                     st.rerun()
                 st.write("---")
 
-    # 3. 個股最新重大訊息速查
     st.markdown("### 🔍 個股最新重大訊息速查")
     col_n_input, col_n_btn = st.columns([2.4, 1.6])
     with col_n_input:
