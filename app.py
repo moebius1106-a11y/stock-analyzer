@@ -11,7 +11,7 @@ import os
 import time
 from urllib.parse import quote
 from datetime import datetime, timezone, timedelta
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 # 頁面配置
 st.set_page_config(
@@ -181,6 +181,18 @@ st.markdown("""
         font-size: 0.95rem;
         line-height: 1.55;
     }
+
+    /* 權威機構研究報告卡片樣式 */
+    .inst-report-box {
+        background: rgba(26, 115, 232, 0.05);
+        border: 1px solid rgba(26, 115, 232, 0.22);
+        border-left: 4px solid #1a73e8;
+        border-radius: 10px;
+        padding: 0.7rem 0.9rem;
+        margin-bottom: 0.55rem;
+        font-size: 0.92rem;
+        line-height: 1.55;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -212,7 +224,6 @@ if ACCESS_PASSWORD is None and not CUSTOM_USERS_DICT:
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
-
 if "current_user" not in st.session_state:
     st.session_state.current_user = "預設操盤手"
 
@@ -308,7 +319,7 @@ def get_stock_display_label(ticker: str, is_fav=False):
         return f"{prefix}{name} ({clean_code})"
     return f"{prefix}{clean_code}"
 
-# ----------------- V8.0 多使用者分流記憶引擎 -----------------
+# ----------------- V9.1 多使用者分流記憶引擎 -----------------
 PROFILES_FILE = "user_profiles.json"
 LEGACY_HISTORY_FILE = "user_history.json"
 
@@ -402,7 +413,7 @@ def toggle_favorite_stock(market: str, ticker: str):
         data[key].append(ticker)
     save_user_data()
 
-# ----------------- V8.0 關鍵市場戰情焦點快訊與即時外電導入系統 -----------------
+# ----------------- 關鍵市場戰情焦點快訊與即時外電導入系統 -----------------
 BRIEFING_FILE = "market_briefings.json"
 
 DEFAULT_STRATEGIC_BRIEFING = {
@@ -510,6 +521,42 @@ def normalize_ticker(ticker: str):
         return t[:-3], "tse"
     return t, "us"
 
+# ----------------- ★ 防卡死核心：共享單次 Yahoo Info 帶逾時保護快取 -----------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_yf_shared_info(ticker: str):
+    def _worker():
+        t = yf.Ticker(ticker)
+        return dict(t.info or {})
+
+    ex = ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(_worker)
+    try:
+        data = fut.result(timeout=4.5)
+        ex.shutdown(wait=False)
+        return data
+    except Exception:
+        ex.shutdown(wait=False)
+        return {}
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_yf_earnings_history_safe(ticker: str):
+    def _worker():
+        t = yf.Ticker(ticker)
+        eh = t.earnings_history
+        if eh is not None and not eh.empty:
+            return eh.tail(4).copy()
+        return None
+
+    ex = ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(_worker)
+    try:
+        res = fut.result(timeout=2.5)
+        ex.shutdown(wait=False)
+        return res
+    except Exception:
+        ex.shutdown(wait=False)
+        return None
+
 # ----------------- 權威 API 1：臺灣證券交易所官方即時行情 -----------------
 def fetch_twse_realtime(ticker: str):
     code, market = normalize_ticker(ticker)
@@ -591,7 +638,7 @@ def fetch_twse_realtime(ticker: str):
     return None
 
 # ----------------- 權威 API 1-B：大盤即時統計看板 -----------------
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=15, show_spinner=False)
 def fetch_twse_market_dashboard():
     result = {
         "twii_price": 0.0, "twii_chg": 0.0, "twii_pct": 0.0,
@@ -616,7 +663,7 @@ def fetch_twse_market_dashboard():
 
     try:
         idx_url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw|tse_t001.tw|otc_o00.tw&json=1&delay=0"
-        r_idx = session.get(idx_url, headers=headers, timeout=3.0)
+        r_idx = session.get(idx_url, headers=headers, timeout=2.5)
         if r_idx.status_code == 200:
             msg_arr = r_idx.json().get("msgArray", [])
             for item in msg_arr:
@@ -656,7 +703,7 @@ def fetch_twse_market_dashboard():
 
     try:
         stat_url = "https://mis.twse.com.tw/stock/api/getStatis.jsp?ex=tse&delay=0"
-        r_stat = session.get(stat_url, headers=headers, timeout=3.0)
+        r_stat = session.get(stat_url, headers=headers, timeout=2.5)
         if r_stat.status_code == 200:
             s_data = r_stat.json()
             detail = s_data.get("detail", {})
@@ -710,7 +757,7 @@ def fetch_twse_market_dashboard():
     return result
 
 # ----------------- 即時分時走勢數據擷取與雙層圖表渲染引擎 -----------------
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_intraday_series(ticker: str):
     try:
         t = yf.Ticker(ticker)
@@ -838,12 +885,12 @@ def render_intraday_chart_widget(ticker: str, title_name: str = ""):
     st.altair_chart(combined_chart, use_container_width=True)
 
 # ----------------- 權威 API 2：臺灣銀行官方牌告匯率 -----------------
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_bot_forex():
     url = "https://rate.bot.com.tw/xrt/flcsv/0/day"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        r = requests.get(url, headers=headers, timeout=3.5)
+        r = requests.get(url, headers=headers, timeout=3.0)
         if r.status_code == 200:
             lines = r.text.splitlines()
             for line in lines:
@@ -860,12 +907,11 @@ def fetch_bot_forex():
         pass
     return None
 
-# ----------------- 權威 API 3：機構分析師評等與目標價 -----------------
-@st.cache_data(ttl=3600)
+# ----------------- 權威 API 3：機構分析師評等與目標價 (共用快取) -----------------
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_analyst_consensus(ticker: str):
     try:
-        t = yf.Ticker(ticker)
-        info = t.info or {}
+        info = fetch_yf_shared_info(ticker)
 
         short_n = info.get("shortName")
         if short_n and ticker.upper() not in GLOBAL_STOCK_NAMES:
@@ -910,6 +956,159 @@ def fetch_analyst_consensus(ticker: str):
             "rec_mean": 3.0,
             "opinions": 0
         }
+
+# ----------------- 權威 API 4：四大華爾街級機構研究套件 (共用快取 + 防卡死逾時保護) -----------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_institutional_research_suite(ticker: str):
+    clean_code, market = normalize_ticker(ticker)
+    if market == "futures":
+        return {"has_suite": False}
+
+    try:
+        info = fetch_yf_shared_info(ticker)
+        if not info:
+            return {"has_suite": False}
+
+        # 1. Financial Analysis (財務分析：三率、現金流、償債與資產報酬)
+        gross_margin = safe_float(info.get("grossMargins"), None)
+        op_margin = safe_float(info.get("operatingMargins"), None)
+        profit_margin = safe_float(info.get("profitMargins"), None)
+        roe = safe_float(info.get("returnOnEquity"), None)
+        roa = safe_float(info.get("returnOnAssets"), None)
+        current_ratio = safe_float(info.get("currentRatio"), None)
+        quick_ratio = safe_float(info.get("quickRatio"), None)
+        debt_to_equity = safe_float(info.get("debtToEquity"), None)
+        free_cf = safe_float(info.get("freeCashflow"), None)
+        op_cf = safe_float(info.get("operatingCashflow"), None)
+        total_cash = safe_float(info.get("totalCash"), None)
+        total_debt = safe_float(info.get("totalDebt"), None)
+
+        # 2. Equity Research (股票研究：多維估值模型、PEG、EV/EBITDA、內在價值位階)
+        trailing_pe = safe_float(info.get("trailingPE"), None)
+        forward_pe = safe_float(info.get("forwardPE"), None)
+        pb_ratio = safe_float(info.get("priceToBook"), None)
+        ps_ratio = safe_float(info.get("priceToSalesTrailing12Months"), None)
+        peg_ratio = safe_float(info.get("pegRatio"), None)
+        ev_ebitda = safe_float(info.get("enterpriseToEbitda"), None)
+        div_yield = safe_float(info.get("dividendYield"), None)
+        payout_ratio = safe_float(info.get("payoutRatio"), None)
+        book_val = safe_float(info.get("bookValue"), None)
+
+        # 3. Earnings Reviewer (財報分析：營收成長、EPS 動能、歷史財報 Beat/Miss 驚奇度)
+        rev_growth = safe_float(info.get("revenueGrowth"), None)
+        earn_growth = safe_float(info.get("earningsGrowth"), None)
+        q_earn_growth = safe_float(info.get("earningsQuarterlyGrowth"), None)
+        trailing_eps = safe_float(info.get("trailingEps"), None)
+        forward_eps = safe_float(info.get("forwardEps"), None)
+        total_rev = safe_float(info.get("totalRevenue"), None)
+        ebitda_val = safe_float(info.get("ebitda"), None)
+
+        earnings_surprises = []
+        eh_tail = fetch_yf_earnings_history_safe(ticker)
+        if eh_tail is not None and not eh_tail.empty:
+            for idx_dt, row_e in eh_tail.iterrows():
+                dt_str = str(idx_dt)[:10]
+                eps_est = safe_float(row_e.get("epsEstimate"), None)
+                eps_act = safe_float(row_e.get("epsActual"), None)
+                surp_pct = safe_float(row_e.get("surprisePercent"), None)
+                if surp_pct is not None and abs(surp_pct) < 2.0:
+                    surp_pct = surp_pct * 100.0
+                earnings_surprises.append({
+                    "季度": dt_str,
+                    "預估EPS": f"{eps_est:.2f}" if eps_est is not None else "--",
+                    "實際EPS": f"{eps_act:.2f}" if eps_act is not None else "--",
+                    "驚奇度(%)": f"{surp_pct:+.1f}%" if surp_pct is not None else "--",
+                    "結果": "🟢 超預期 (Beat)" if (surp_pct is not None and surp_pct > 0) else ("🔴 低於預期 (Miss)" if (surp_pct is not None and surp_pct < 0) else "⚪ 符合預期")
+                })
+
+        # 4. Market Researcher (市場研究：產業地位、市值、機構/外資籌碼、52週高低位階)
+        sector = info.get("sector") or info.get("category") or "核心產業"
+        industry = info.get("industry") or "指標企業"
+        mkt_cap = safe_float(info.get("marketCap"), None)
+        beta = safe_float(info.get("beta"), None)
+        inst_held = safe_float(info.get("heldPercentInstitutions"), None)
+        insider_held = safe_float(info.get("heldPercentInsiders"), None)
+        high_52w = safe_float(info.get("fiftyTwoWeekHigh"), None)
+        low_52w = safe_float(info.get("fiftyTwoWeekLow"), None)
+        avg_vol_10d = safe_float(info.get("averageVolume10days"), None)
+        avg_vol_3m = safe_float(info.get("averageVolume"), None)
+        summary_text = str(info.get("longBusinessSummary", "")).strip()
+
+        return {
+            "has_suite": True,
+            "financial_analysis": {
+                "gross_margin": gross_margin * 100.0 if gross_margin is not None else None,
+                "op_margin": op_margin * 100.0 if op_margin is not None else None,
+                "profit_margin": profit_margin * 100.0 if profit_margin is not None else None,
+                "roe": roe * 100.0 if roe is not None else None,
+                "roa": roa * 100.0 if roa is not None else None,
+                "current_ratio": current_ratio,
+                "quick_ratio": quick_ratio,
+                "debt_to_equity": debt_to_equity,
+                "free_cf": free_cf,
+                "op_cf": op_cf,
+                "total_cash": total_cash,
+                "total_debt": total_debt
+            },
+            "equity_research": {
+                "trailing_pe": trailing_pe,
+                "forward_pe": forward_pe,
+                "pb_ratio": pb_ratio,
+                "ps_ratio": ps_ratio,
+                "peg_ratio": peg_ratio,
+                "ev_ebitda": ev_ebitda,
+                "div_yield": div_yield * 100.0 if (div_yield is not None and div_yield < 1.0) else div_yield,
+                "payout_ratio": payout_ratio * 100.0 if (payout_ratio is not None and payout_ratio <= 2.0) else payout_ratio,
+                "book_val": book_val
+            },
+            "earnings_reviewer": {
+                "rev_growth": rev_growth * 100.0 if rev_growth is not None else None,
+                "earn_growth": earn_growth * 100.0 if earn_growth is not None else None,
+                "q_earn_growth": q_earn_growth * 100.0 if q_earn_growth is not None else None,
+                "trailing_eps": trailing_eps,
+                "forward_eps": forward_eps,
+                "total_rev": total_rev,
+                "ebitda_val": ebitda_val,
+                "surprises": earnings_surprises
+            },
+            "market_researcher": {
+                "sector": sector,
+                "industry": industry,
+                "mkt_cap": mkt_cap,
+                "beta": beta,
+                "inst_held": inst_held * 100.0 if inst_held is not None else None,
+                "insider_held": insider_held * 100.0 if insider_held is not None else None,
+                "high_52w": high_52w,
+                "low_52w": low_52w,
+                "avg_vol_10d": avg_vol_10d,
+                "avg_vol_3m": avg_vol_3m,
+                "summary_text": summary_text
+            }
+        }
+    except Exception:
+        return {"has_suite": False}
+
+def format_large_money(val, currency="NTD"):
+    if val is None or val == 0:
+        return "未揭露"
+    abs_v = abs(val)
+    sign = "-" if val < 0 else ""
+    if currency == "USD":
+        if abs_v >= 1e12:
+            return f"{sign}${abs_v/1e12:.2f} 兆 (T)"
+        if abs_v >= 1e9:
+            return f"{sign}${abs_v/1e9:.2f} 十億 (B)"
+        if abs_v >= 1e6:
+            return f"{sign}${abs_v/1e6:.2f} 百萬 (M)"
+        return f"{sign}${abs_v:,.0f}"
+    else:
+        if abs_v >= 1e12:
+            return f"{sign}{abs_v/1e12:.2f} 兆元"
+        if abs_v >= 1e8:
+            return f"{sign}{abs_v/1e8:.2f} 億元"
+        if abs_v >= 1e4:
+            return f"{sign}{abs_v/1e4:.1f} 萬元"
+        return f"{sign}{abs_v:,.0f} 元"
 
 # ----------------- 期貨專屬權威分析師與法人籌碼共識 -----------------
 def fetch_futures_analyst_consensus(code: str, df_fut: pd.DataFrame, df_mkt: pd.DataFrame):
@@ -965,7 +1164,7 @@ def fetch_futures_analyst_consensus(code: str, df_fut: pd.DataFrame, df_mkt: pd.
     }
 
 # ----------------- 歷史技術數據與指標計算 -----------------
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_and_calc(ticker: str, period: str = "1y"):
     try:
         obj = yf.Ticker(ticker)
@@ -1018,7 +1217,7 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
         loss = (-delta.where(delta < 0, 0)).rolling(14, min_periods=1).mean()
         total_move = gain + loss
         rs = gain / (loss + 1e-9)
-        df['RSI14'] = np.where(total_move < 1e-6, 50.0, 100 - (100 / (1 + rs)))
+        df['RSI14'] = np.where(total_move < 1e-6, 50.0, 100.0 - (100.0 / (1.0 + rs)))
 
         ema12 = df['Close'].ewm(span=12, adjust=False).mean()
         ema26 = df['Close'].ewm(span=26, adjust=False).mean()
@@ -1036,16 +1235,15 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
     except Exception:
         return None
 
-# ----------------- 基本面與 ETF 數據 -----------------
-@st.cache_data(ttl=7200)
+# ----------------- 基本面與 ETF 數據 (共用快取) -----------------
+@st.cache_data(ttl=7200, show_spinner=False)
 def fetch_fundamentals(ticker: str):
     clean_code, market = normalize_ticker(ticker)
     if market == "futures":
         return {"has_data": False, "is_etf": False, "score": None, "reasons": []}
 
     try:
-        t = yf.Ticker(ticker)
-        info = t.info or {}
+        info = fetch_yf_shared_info(ticker)
 
         is_etf = info.get('quoteType') == 'ETF' or clean_code.startswith(('00', '01'))
 
@@ -1326,7 +1524,7 @@ def backtest_strategy(df_stock, market_type="tw"):
     }
 
 # ----------------- 外匯數據分析 -----------------
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def analyze_forex_data():
     res = {
         "twd_rate": None,
@@ -1398,8 +1596,22 @@ def analyze_forex_data():
 
     return res
 
+# ----------------- 全域基準指數平行預載引擎 (消除啟動阻塞) -----------------
+@st.cache_data(ttl=120, show_spinner=False)
+def preload_global_benchmarks():
+    tickers = ["^TWII", "WTX=F", "TSM", "^SOX", "^GSPC"]
+    results = {}
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futs = {t: ex.submit(fetch_and_calc, t) for t in tickers}
+        for t, f in futs.items():
+            try:
+                results[t] = f.result(timeout=5.0)
+            except Exception:
+                results[t] = None
+    return results
+
 # ----------------- 全維度綜合量化評估 -----------------
-def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, forex_info, asset_type="tw"):
+def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, forex_info, asset_type="tw", include_inst_suite=True):
     live_twse = fetch_twse_realtime(ticker) if asset_type == "tw" else None
     ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag = analyze_opening_and_ma(df_stock, live_twse)
 
@@ -1414,14 +1626,17 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
     if asset_type == "futures":
         analyst_data = fetch_futures_analyst_consensus(ticker, df_stock, df_market)
         fund_data = {"has_data": False, "score": None, "reasons": []}
+        inst_suite = {"has_suite": False}
         global_score = 12
     elif asset_type == "us":
         analyst_data = fetch_analyst_consensus(ticker)
         fund_data = fetch_fundamentals(ticker)
+        inst_suite = fetch_institutional_research_suite(ticker) if include_inst_suite else {"has_suite": False}
         global_score = 10
     else:
         analyst_data = fetch_analyst_consensus(ticker)
         fund_data = fetch_fundamentals(ticker)
+        inst_suite = fetch_institutional_research_suite(ticker) if include_inst_suite else {"has_suite": False}
         try:
             if df_tsm is not None and len(df_tsm) >= 2:
                 tsm_change = ((df_tsm['Close'].iloc[-1] - df_tsm['Close'].iloc[-2]) / df_tsm['Close'].iloc[-2]) * 100
@@ -1437,6 +1652,18 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
                 global_score += 8
         except Exception:
             global_score += 8
+
+    # 計算相對大盤超額報酬 (Alpha)
+    rel_alpha_20d = 0.0
+    rel_alpha_60d = 0.0
+    if df_market is not None and len(df_market) >= 21 and len(df_stock) >= 21:
+        stk_20d = (df_stock['Close'].iloc[-1] / df_stock['Close'].iloc[-21] - 1.0) * 100.0
+        mkt_20d = (df_market['Close'].iloc[-1] / df_market['Close'].iloc[-21] - 1.0) * 100.0
+        rel_alpha_20d = stk_20d - mkt_20d
+    if df_market is not None and len(df_market) >= 61 and len(df_stock) >= 61:
+        stk_60d = (df_stock['Close'].iloc[-1] / df_stock['Close'].iloc[-61] - 1.0) * 100.0
+        mkt_60d = (df_market['Close'].iloc[-1] / df_market['Close'].iloc[-61] - 1.0) * 100.0
+        rel_alpha_60d = stk_60d - mkt_60d
 
     mkt_score = 0
     mkt_reasons = []
@@ -1527,6 +1754,9 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
         "tech_reasons": tech_reasons,
         "fund_data": fund_data,
         "analyst_data": analyst_data,
+        "inst_suite": inst_suite,
+        "rel_alpha_20d": rel_alpha_20d,
+        "rel_alpha_60d": rel_alpha_60d,
         "forex_info": forex_info,
         "live_info": live_twse,
         "asset_type": asset_type
@@ -1572,7 +1802,7 @@ TW_FUTURES_SPECS = {
 }
 
 # ----------------- 即時新聞雙結構解析引擎 -----------------
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_stock_news(ticker: str):
     try:
         t = yf.Ticker(ticker)
@@ -1654,31 +1884,22 @@ EARNINGS_CALLS = [
 # ----------------- 狀態初始化 -----------------
 if "main_mode" not in st.session_state:
     st.session_state.main_mode = "live_watch"
-
 if "selected_tw_ticker" not in st.session_state:
     st.session_state.selected_tw_ticker = "2330.TW"
-
 if "selected_us_ticker" not in st.session_state:
     st.session_state.selected_us_ticker = "NVDA"
-
 if "selected_fut_contract" not in st.session_state:
     st.session_state.selected_fut_contract = "WTX"
-
 if "auto_run_tw" not in st.session_state:
     st.session_state.auto_run_tw = False
-
 if "auto_run_us" not in st.session_state:
     st.session_state.auto_run_us = False
-
 if "analysis_cache_tw" not in st.session_state:
     st.session_state.analysis_cache_tw = None
-
 if "analysis_cache_us" not in st.session_state:
     st.session_state.analysis_cache_us = None
-
 if "analysis_cache_fut" not in st.session_state:
     st.session_state.analysis_cache_fut = None
-
 if "etf_category_filter" not in st.session_state:
     st.session_state.etf_category_filter = "全部"
 
@@ -1744,36 +1965,21 @@ with st.expander(f"👤 當前使用者：【{st.session_state.current_user}】�
 with st.expander("📘 點此查看【系統現行版本完整功能清單與版本更新日誌】", expanded=False):
     st.markdown("""
     ### 🌟 系統定位與核心架構
-    本系統為**跨市場（大盤即時看盤、台股、美股、台灣期貨、美股期貨、ETF、全球外匯）全維度量化決策平台**，整合臺灣證券交易所 (TWSE) 官方即時撮合、臺灣銀行官方牌告匯率、Google 財經外電 RSS 與華爾街/本土法人共識報告資料庫。
+    本系統為**跨市場（大盤即時看盤、台股、美股、台灣期貨、美股期貨、ETF、全球外匯）全維度量化決策平台**，整合臺灣證券交易所 (TWSE) 官方即時撮合、臺灣銀行官方牌告匯率、Google 財經外電 RSS 與華爾街四大權威機構研究模組。
 
     ---
     ### 🛠️ 核心功能模組總覽
-    1. **🔥 關鍵市場戰情焦點導入 ＆ 即時總經外電快訊（V8.0 全新搭載）**：
-       - **置頂首席戰情公告欄**：展示關鍵市場決戰分析（如台股叩關 5 萬點洗盤與美國 CPI 數據決戰劇本），支援在系統內直接編輯、貼上導入最新戰情分析並即時同步。
-       - **Google 財經外電 RSS 即時引擎**：免 API Key 自動抓取最新「台股、美股、CPI、聯準會、台積電、費半」即時新聞頭條，並支援結合即時指標一鍵自動合成盤勢分析。
-    2. **👤 多使用者獨立記憶分流系統（V8.0 全新搭載）**：
-       - 登入或頂部狀態列可隨時切換「使用者代號／暱稱」（`user_profiles.json`），每位使用者獨立保存各自的**台股常用清單、美股常用清單、最近查詢紀錄、預設操作本金、單筆風險比例與個人看盤筆記**，並支援備份碼匯出/還原。
-    3. **📺 大盤與個股即時分時看盤室（V7.0）**：
-       - **Yahoo 股市級別即時分時走勢圖**：包含當日 1分/5分K 藍色價格折線、**昨收平盤灰色基準虛線**、底部紅綠分時成交量柱狀圖。
-       - **大盤右側統計數據看板**：揭露加權指數（含金融/未含金融）、成交金額（億）、委買/委賣筆數與張數（含均買/均賣張數）、漲跌停與平盤家數。
-       - **個股即時五檔委買賣明細**：查詢台股時自動解析買進一～五檔、賣出一～五檔掛單價量與內外買賣力道比。
-    4. **🔍 台股 ＆ 🇺🇸 美股 ＆ ⚡ 台灣期貨 全維度深度體檢**：
-       - 10 大就地展開分析卡：即時分時圖與五檔掛單、分析師目標價與下單執行卡、多空結論、開盤跳空、5/20/60MA 矩陣、基本面護城河、階梯停利 SOP、風控計算機、無前視偏誤回測、日K均線圖。
-    5. **📈 美股期貨 ＆ 📊 ETF 策略專區 ＆ 💎 體質雷達 ＆ 📢 法說新聞 ＆ 💱 外匯大盤**：
-       - 涵蓋四大美指期、ETF 四大分類排行與微笑曲線試算、核心藍籌雙重濾網、臺銀官方匯率與日圓平倉風險監控。
-
-    ---
-    ### 📜 歷次版本更新日誌 (Version Changelog)
-    - **V8.0（關鍵戰情訊息導入 ＆ 多人獨立記憶分流版 - 現行版本）**：
-      - 新增置頂「🔥 關鍵市場戰情焦點」廣播卡與自訂戰情導入系統（`market_briefings.json`），結合 Google News 財經外電 RSS 即時爬蟲與量化盤勢自動合成引擎。
-      - 新增「👤 多使用者獨立記憶分流系統」（`user_profiles.json`），支援依使用者代號隔離自選股、查詢歷史、個人預設本金與看盤筆記，並支援 JSON 備份碼匯出/還原。
-      - 修復 `render_analysis_view` 放置位置截斷 `if/elif` 語法鏈的問題。
-    - **V7.0（即時分時看盤與大盤委買賣統計版）**：
-      - 新增「📺 大盤即時看盤」專區，完整還原加權指數分時走勢圖（含昨收平盤虛線、底部紅綠量能柱）與大盤委買委賣/漲跌家數統計表，個股嵌入五檔掛單明細與 30 秒自動刷新。
-    - **V6.0（行動端雙欄鎖定與深度除錯版）**：
-      - 完成手機端 CSS 雙欄強制並排鎖定（`max-width: 100vw`），新增全市場中英股名智慧對照字典，修復空方破線停損價矛盾與負本益比誤判。
-    - **V5.0 ～ V1.0（跨市場拆分、機構回測防偏誤、分析師共識與基礎決策站）**：
-      - 拆分台股/美股/台期/美期獨立專區、建立無前視偏誤回測引擎（$T+1$ 開盤進場與真實 MDD）、接入華爾街/本土券商共識目標價與臺銀官方匯率。
+    1. **🏛️ 四大華爾街級權威機構深度研究套件（V9.1 極速防卡死版）**：
+       - **Financial Analysis（財務分析）**：三率結構（毛利率/營益率/淨利率）、ROE/ROA、流動比/速動比、負債權益比、營業與自由現金流診斷。
+       - **Equity Research（股票研究）**：Trailing/Forward PE、P/B、P/S、PEG 成長估值比、EV/EBITDA 倍數與機構共識目標價位階。
+       - **Earnings Reviewer（財報分析）**：季度營收年增率 (YoY)、EPS 盈餘成長動能、近四季財報驚奇度 (Earnings Surprise Beat/Miss) 完整紀錄。
+       - **Market Researcher（市場研究）**：產業板塊定位、總市值規模、外資/機構持股籌碼比例、52 週高低位階與相對大盤超額報酬 (Alpha)，並支援**一鍵匯出完整機構研究報告**。
+    2. **🔥 關鍵市場戰情焦點導入 ＆ 即時總經外電快訊（V8.0）**：
+       - 置頂首席戰情公告欄與 Google 財經外電 RSS 即時引擎。
+    3. **👤 多使用者獨立記憶分流系統（V8.0）**：
+       - 每位使用者獨立保存常用清單、查詢紀錄、預設本金、風險比例與看盤筆記。
+    4. **📺 大盤與個股即時分時看盤室（V7.0）**：
+       - Yahoo 股市級別即時分時走勢圖（含昨收平盤基準線、紅綠成交量柱）、大盤委買賣統計看板與個股五檔掛單明細。
     """)
 
 # 🔥 置頂關鍵市場戰情焦點廣播卡
@@ -1843,13 +2049,188 @@ with r4_c2:
 
 st.write("")
 
-# 全域預載
-df_market = fetch_and_calc("^TWII")
-df_futures_bench = fetch_and_calc("WTX=F")
-df_tsm = fetch_and_calc("TSM")
-df_sox = fetch_and_calc("^SOX")
-df_spx = fetch_and_calc("^GSPC")
+# 全域平行預載（高速不阻塞）
+bench_dict = preload_global_benchmarks()
+df_market = bench_dict.get("^TWII")
+df_futures_bench = bench_dict.get("WTX=F")
+df_tsm = bench_dict.get("TSM")
+df_sox = bench_dict.get("^SOX")
+df_spx = bench_dict.get("^GSPC")
 global_forex = analyze_forex_data()
+
+# ================= 四大權威機構研究報告渲染器 (V9.1 極速防卡死版) =================
+def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
+    suite = res.get("inst_suite", {})
+    if not suite or not suite.get("has_suite"):
+        return
+
+    fin = suite["financial_analysis"]
+    eq = suite["equity_research"]
+    earn = suite["earnings_reviewer"]
+    mkt = suite["market_researcher"]
+    an_data = res["analyst_data"]
+    curr_code = "USD" if mode_type == "us" else "NTD"
+    curr_sym = "USD" if mode_type == "us" else "元"
+    disp_name = get_stock_display_label(ticker_raw, is_fav=False)
+
+    with st.expander("🏛️ 【四大權威機構深度研究報告】Financial / Equity / Earnings / Market", expanded=True):
+        st.caption("整合華爾街與法人機構四大核心投研維度：財務分析、股票估值研究、財報盈餘檢視、市場籌碼與相對強度。")
+        tab_fa, tab_eq, tab_er, tab_mr, tab_export = st.tabs([
+            "📊 財務分析",
+            "📑 股票研究",
+            "📈 財報分析",
+            "🌐 市場研究",
+            "📥 完整報告"
+        ])
+
+        # Tab 1: Financial Analysis (財務分析)
+        with tab_fa:
+            st.markdown("#### 📊 Financial Analysis（企業財務結構與現金流護城河）")
+            fa_c1, fa_c2, fa_c3 = st.columns(3)
+            fa_c1.metric("毛利率 (Gross)", f"{fin['gross_margin']:.1f}%" if fin['gross_margin'] is not None else "未揭露")
+            fa_c2.metric("營益率 (Operating)", f"{fin['op_margin']:.1f}%" if fin['op_margin'] is not None else "未揭露")
+            fa_c3.metric("淨利率 (Net)", f"{fin['profit_margin']:.1f}%" if fin['profit_margin'] is not None else "未揭露")
+
+            fa_c4, fa_c5, fa_c6 = st.columns(3)
+            fa_c4.metric("股東權益報酬 (ROE)", f"{fin['roe']:.1f}%" if fin['roe'] is not None else "未揭露")
+            fa_c5.metric("資產報酬率 (ROA)", f"{fin['roa']:.1f}%" if fin['roa'] is not None else "未揭露")
+            fa_c6.metric("負債權益比 (D/E)", f"{fin['debt_to_equity']:.1f}%" if fin['debt_to_equity'] is not None else "未揭露")
+
+            fa_c7, fa_c8 = st.columns(2)
+            cr_str = f"{fin['current_ratio']:.2f}" if fin['current_ratio'] is not None else "--"
+            qr_str = f"{fin['quick_ratio']:.2f}" if fin['quick_ratio'] is not None else "--"
+            fa_c7.metric("流動比率 / 速動比率", f"{cr_str} / {qr_str}")
+            fa_c8.metric("自由現金流 (FCF)", format_large_money(fin['free_cf'], curr_code))
+
+            st.markdown(f"""
+            <div class="inst-report-box">
+                <b>💡 首席財務分析師診斷：</b><br>
+                • <b>帳上現金部位</b>：{format_large_money(fin['total_cash'], curr_code)} ｜ <b>總負債規模</b>：{format_large_money(fin['total_debt'], curr_code)}<br>
+                • <b>營業現金流 (OCF)</b>：{format_large_money(fin['op_cf'], curr_code)}（{'🟢 現金流充沛，具備強大資本支出與配息底氣' if (fin['op_cf'] and fin['op_cf'] > 0) else '⚪ 現金流資料待更新或屬金融/ETF資產'}）
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Tab 2: Equity Research (股票研究)
+        with tab_eq:
+            st.markdown("#### 📑 Equity Research（機構估值模型與目標位階研究）")
+            eq_c1, eq_c2, eq_c3 = st.columns(3)
+            eq_c1.metric("歷史本益比 (Trailing PE)", f"{eq['trailing_pe']:.1f}x" if (eq['trailing_pe'] and eq['trailing_pe'] > 0) else "不適用")
+            eq_c2.metric("預估本益比 (Forward PE)", f"{eq['forward_pe']:.1f}x" if (eq['forward_pe'] and eq['forward_pe'] > 0) else "未揭露")
+            eq_c3.metric("股價淨值比 (P/B)", f"{eq['pb_ratio']:.2f}x" if eq['pb_ratio'] is not None else "未揭露")
+
+            eq_c4, eq_c5, eq_c6 = st.columns(3)
+            eq_c4.metric("PEG 成長估值比", f"{eq['peg_ratio']:.2f}" if eq['peg_ratio'] is not None else "未揭露")
+            eq_c5.metric("EV / EBITDA", f"{eq['ev_ebitda']:.1f}x" if eq['ev_ebitda'] is not None else "未揭露")
+            eq_c6.metric("現金殖利率", f"{eq['div_yield']:.2f}%" if eq['div_yield'] is not None else "未揭露")
+
+            upside_str = "暫無目標均價"
+            if an_data.get("target_mean", 0) > 0:
+                up_val = ((an_data["target_mean"] - res["close"]) / res["close"]) * 100.0
+                upside_str = f"目標均價 {an_data['target_mean']:.2f} {curr_sym}（潛在空間 {up_val:+.1f}%，區間 {an_data['target_low']:.1f} ~ {an_data['target_high']:.1f}）"
+
+            val_verdict = "合理估值區間"
+            if eq['forward_pe'] and eq['trailing_pe'] and eq['forward_pe'] < eq['trailing_pe']:
+                val_verdict = "🟢 未來盈餘成長帶動 Forward PE 收斂，具備估值擴張潛力"
+            elif eq['trailing_pe'] and eq['trailing_pe'] > 35:
+                val_verdict = "🟡 高本益比成長溢價區，需高度仰賴後續財報高成長支撐"
+
+            st.markdown(f"""
+            <div class="inst-report-box">
+                <b>💡 機構股票研究評等摘要：</b><br>
+                • <b>華爾街/法人共識評等</b>：{an_data.get('rec_label', '⚪ 中立')}（共 {an_data.get('opinions', 0)} 家機構覆蓋）<br>
+                • <b>法人目標價位階</b>：{upside_str}<br>
+                • <b>估值模型結論</b>：{val_verdict}（每股淨值 Book Value：{f"{eq['book_val']:.2f} {curr_sym}" if eq['book_val'] else "未揭露"}）
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Tab 3: Earnings Reviewer (財報分析)
+        with tab_er:
+            st.markdown("#### 📈 Earnings Reviewer（季度財報成長動能與盈餘驚奇度）")
+            er_c1, er_c2, er_c3 = st.columns(3)
+            er_c1.metric("營收年增率 (Rev YoY)", f"{earn['rev_growth']:+.1f}%" if earn['rev_growth'] is not None else "未揭露")
+            er_c2.metric("盈餘年增率 (Earn YoY)", f"{earn['earn_growth']:+.1f}%" if earn['earn_growth'] is not None else "未揭露")
+            er_c3.metric("季度盈餘成長 (QoQ/YoY)", f"{earn['q_earn_growth']:+.1f}%" if earn['q_earn_growth'] is not None else "未揭露")
+
+            er_c4, er_c5 = st.columns(2)
+            er_c4.metric("近四季累計 EPS (Trailing)", f"{earn['trailing_eps']:.2f} {curr_sym}" if earn['trailing_eps'] is not None else "未揭露")
+            er_c5.metric("法人預估未來 EPS (Forward)", f"{earn['forward_eps']:.2f} {curr_sym}" if earn['forward_eps'] is not None else "未揭露")
+
+            st.caption(f"📌 近四季總營收規模：**{format_large_money(earn['total_rev'], curr_code)}** ｜ EBITDA 獲利規模：**{format_large_money(earn['ebitda_val'], curr_code)}**")
+
+            if earn["surprises"]:
+                st.markdown("##### 📋 近四季財報實際 EPS vs 法人預估驚奇度 (Earnings Surprise)")
+                st.dataframe(pd.DataFrame(earn["surprises"]), use_container_width=True, hide_index=True)
+            else:
+                st.info("💡 該標的目前無歷史季度 EPS Surprise 明細表，請參考上方營收與盈餘年增率指標。")
+
+        # Tab 4: Market Researcher (市場研究)
+        with tab_mr:
+            st.markdown("#### 🌐 Market Researcher（產業地位、機構籌碼與市場相對強度）")
+            mr_c1, mr_c2, mr_c3 = st.columns(3)
+            mr_c1.metric("總市值規模", format_large_money(mkt['mkt_cap'], curr_code))
+            mr_c2.metric("外資/機構持股比", f"{mkt['inst_held']:.1f}%" if mkt['inst_held'] is not None else "未揭露")
+            mr_c3.metric("Beta 波動風險", f"{mkt['beta']:.2f}" if mkt['beta'] is not None else "未揭露")
+
+            mr_c4, mr_c5 = st.columns(2)
+            mr_c4.metric("近 20 日相對大盤超額報酬 (Alpha)", f"{res.get('rel_alpha_20d', 0.0):+.2f}%",
+                         "強於大盤" if res.get('rel_alpha_20d', 0.0) > 0 else "弱於大盤")
+            mr_c5.metric("近 60 日相對大盤超額報酬 (Alpha)", f"{res.get('rel_alpha_60d', 0.0):+.2f}%",
+                         "波段領頭羊" if res.get('rel_alpha_60d', 0.0) > 0 else "波段落後大盤")
+
+            pos_52w_str = "未揭露"
+            if mkt['high_52w'] and mkt['low_52w'] and mkt['high_52w'] > mkt['low_52w']:
+                pos_pct = ((res['close'] - mkt['low_52w']) / (mkt['high_52w'] - mkt['low_52w'])) * 100.0
+                pos_52w_str = f"位於 52 週區間之 {pos_pct:.1f}% 位階（低點 {mkt['low_52w']:.2f} ～ 高點 {mkt['high_52w']:.2f}）"
+
+            st.markdown(f"""
+            <div class="inst-report-box">
+                <b>💡 市場與籌碼研究員觀點：</b><br>
+                • <b>所屬產業板塊</b>：{mkt['sector']} — {mkt['industry']}<br>
+                • <b>52 週價格位階</b>：{pos_52w_str}<br>
+                • <b>籌碼穩定度</b>：內部人/大股東持股 {f"{mkt['insider_held']:.1f}%" if mkt['insider_held'] is not None else "--"} ｜ 10日均量 vs 3月均量比：{f"{(mkt['avg_vol_10d']/(mkt['avg_vol_3m']+1e-9)):.2f}x" if (mkt['avg_vol_10d'] and mkt['avg_vol_3m']) else "--"}
+            </div>
+            """, unsafe_allow_html=True)
+
+            if mkt["summary_text"]:
+                with st.expander("📖 查看企業核心業務與全球競爭護城河簡介", expanded=False):
+                    st.write(mkt["summary_text"])
+
+        # Tab 5: 一鍵匯出完整機構級研究報告
+        with tab_export:
+            st.markdown("#### 📥 完整機構級四維度投研報告（可直接複製或下載存檔）")
+            report_md = f"""# 🏛️ 【{disp_name}】機構級四維度深度研究報告
+- **報告生成時間**：{datetime.now(TAIPEI_TZ).strftime('%Y-%m-%d %H:%M')}
+- **當前最新報價**：{res['close']:.2f} {curr_sym} ｜ **量化綜合總分**：{res['total_score']} / 100
+- **建議波段停損價**：{res['stop_loss']:.2f} {curr_sym} ｜ **波段目標價**：{res['target_60d']:.2f} {curr_sym}
+
+---
+## 1. 📊 Financial Analysis（財務分析）
+- **三率表現**：毛利率 `{f"{fin['gross_margin']:.1f}%" if fin['gross_margin'] is not None else "N/A"}` ｜ 營益率 `{f"{fin['op_margin']:.1f}%" if fin['op_margin'] is not None else "N/A"}` ｜ 淨利率 `{f"{fin['profit_margin']:.1f}%" if fin['profit_margin'] is not None else "N/A"}`
+- **資本報酬**：ROE `{f"{fin['roe']:.1f}%" if fin['roe'] is not None else "N/A"}` ｜ ROA `{f"{fin['roa']:.1f}%" if fin['roa'] is not None else "N/A"}`
+- **償債與現金流**：負債權益比 `{f"{fin['debt_to_equity']:.1f}%" if fin['debt_to_equity'] is not None else "N/A"}` ｜ 自由現金流 `{format_large_money(fin['free_cf'], curr_code)}`
+
+## 2. 📑 Equity Research（股票估值研究）
+- **機構共識評等**：{an_data.get('rec_label', 'N/A')}（共 {an_data.get('opinions', 0)} 家機構追蹤，目標均價 `{an_data.get('target_mean', 0):.2f} {curr_sym}`）
+- **核心估值倍數**：Trailing PE `{f"{eq['trailing_pe']:.1f}x" if eq['trailing_pe'] else "N/A"}` ｜ Forward PE `{f"{eq['forward_pe']:.1f}x" if eq['forward_pe'] else "N/A"}` ｜ P/B `{f"{eq['pb_ratio']:.2f}x" if eq['pb_ratio'] else "N/A"}` ｜ EV/EBITDA `{f"{eq['ev_ebitda']:.1f}x" if eq['ev_ebitda'] else "N/A"}`
+
+## 3. 📈 Earnings Reviewer（財報與盈餘分析）
+- **成長動能**：營收年增率 `{f"{earn['rev_growth']:+.1f}%" if earn['rev_growth'] is not None else "N/A"}` ｜ 盈餘年增率 `{f"{earn['earn_growth']:+.1f}%" if earn['earn_growth'] is not None else "N/A"}`
+- **每股盈餘**：Trailing EPS `{f"{earn['trailing_eps']:.2f}" if earn['trailing_eps'] is not None else "N/A"}` ｜ Forward EPS `{f"{earn['forward_eps']:.2f}" if earn['forward_eps'] is not None else "N/A"}`
+
+## 4. 🌐 Market Researcher（市場與籌碼研究）
+- **產業板塊**：{mkt['sector']} / {mkt['industry']} ｜ **總市值**：{format_large_money(mkt['mkt_cap'], curr_code)}
+- **機構籌碼與相對強度**：外資/機構持股 `{f"{mkt['inst_held']:.1f}%" if mkt['inst_held'] is not None else "N/A"}` ｜ 近20日相對大盤 Alpha `{res.get('rel_alpha_20d', 0.0):+.2f}%` ｜ 近60日相對大盤 Alpha `{res.get('rel_alpha_60d', 0.0):+.2f}%`
+- **技術均線結構**：{res['ma_alignment']}
+"""
+            st.code(report_md, language="markdown")
+            st.download_button(
+                label="💾 下載完整機構研究報告 (.md)",
+                data=report_md.encode("utf-8"),
+                file_name=f"Research_Report_{ticker_raw}_{datetime.now(TAIPEI_TZ).strftime('%Y%m%d')}.md",
+                mime="text/markdown",
+                use_container_width=True,
+                key=f"dl_rep_{ticker_raw}_{mode_type}"
+            )
 
 # ================= 模組共用渲染器 (放置於所有 if/elif 之前，確保語法鏈完整) =================
 def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallback_warning=None, ticker_raw=None):
@@ -1939,6 +2320,10 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
                 </div>
                 """
             st.markdown(f"<div class='yahoo-stat-box'>{rows_html}</div>", unsafe_allow_html=True)
+
+    # ★ 四大華爾街級權威機構深度研究報告 (針對台股與美股自動展開)
+    if mode_type in ("tw", "us"):
+        render_institutional_research_panel(res, ticker_raw, mode_type=mode_type)
 
     # 1. 權威分析師/期顧共識 ＆ 精確下單指引
     guide_title = "🎯 【權威期顧分析師共識 ＆ 精確期貨下單卡】" if mode_type == "futures" else "🎯 【權威分析師共識 ＆ 精確下單指引】"
@@ -2330,10 +2715,10 @@ elif st.session_state.main_mode == "tw_stock":
 
     if exec_clicked or st.session_state.auto_run_tw:
         st.session_state.auto_run_tw = False
-        with st.spinner("連線 TWSE 撮合主機計算中..."):
+        with st.spinner("連線 TWSE 撮合主機與四大權威機構資料庫計算中..."):
             df_stk = fetch_and_calc(cleaned_tw_ticker)
             if df_stk is not None:
-                r = analyze_full_stock(cleaned_tw_ticker, df_stk, df_market, df_futures_bench, df_tsm, df_sox, global_forex, asset_type="tw")
+                r = analyze_full_stock(cleaned_tw_ticker, df_stk, df_market, df_futures_bench, df_tsm, df_sox, global_forex, asset_type="tw", include_inst_suite=True)
                 st.session_state.analysis_cache_tw = (r, df_stk, cleaned_tw_ticker)
                 add_recent_history("tw", cleaned_tw_ticker)
             else:
@@ -2411,10 +2796,10 @@ elif st.session_state.main_mode == "us_stock":
 
     if exec_us_btn or st.session_state.auto_run_us:
         st.session_state.auto_run_us = False
-        with st.spinner("連線美股即時行情與華爾街資料庫中..."):
+        with st.spinner("連線美股即時行情與華爾街四大研究資料庫中..."):
             df_stk_us = fetch_and_calc(cleaned_us_ticker)
             if df_stk_us is not None:
-                r_us = analyze_full_stock(cleaned_us_ticker, df_stk_us, df_spx, None, None, df_sox, global_forex, asset_type="us")
+                r_us = analyze_full_stock(cleaned_us_ticker, df_stk_us, df_spx, None, None, df_sox, global_forex, asset_type="us", include_inst_suite=True)
                 st.session_state.analysis_cache_us = (r_us, df_stk_us, cleaned_us_ticker)
                 add_recent_history("us", cleaned_us_ticker)
             else:
@@ -2495,7 +2880,7 @@ elif st.session_state.main_mode == "tw_futures":
                 fallback_note = f"📌 **行情資料來源提示**：外部資料庫未提供此期貨即時報價，走勢與均線位階參考加權指數標的；風控與下單已精確套用【{spec_info['name']}】契約規格（每點 {spec_info['tick_value']} 元、保證金 {spec_info['initial_margin']:,} 元）。"
 
             if df_target_fut is not None:
-                r_fut = analyze_full_stock(clean_key, df_target_fut, df_market, None, None, None, global_forex, asset_type="futures")
+                r_fut = analyze_full_stock(clean_key, df_target_fut, df_market, None, None, None, global_forex, asset_type="futures", include_inst_suite=False)
                 st.session_state.analysis_cache_fut = (r_fut, df_target_fut, spec_info, fallback_note, clean_key)
             else:
                 st.session_state.analysis_cache_fut = None
@@ -2575,7 +2960,7 @@ elif st.session_state.main_mode == "etf":
                 name, code, cat, desc = item
                 df_stk = fetch_and_calc(code)
                 if df_stk is not None:
-                    r = analyze_full_stock(code, df_stk, df_market, df_futures_bench, df_tsm, df_sox, global_forex, asset_type="tw")
+                    r = analyze_full_stock(code, df_stk, df_market, df_futures_bench, df_tsm, df_sox, global_forex, asset_type="tw", include_inst_suite=False)
                     return {
                         "名稱": name,
                         "代碼": code,
@@ -2599,13 +2984,13 @@ elif st.session_state.main_mode == "etf":
             for idx, f in enumerate(futures):
                 status_text.text(f"連線撮合中 ({idx+1}/{total_items})...")
                 try:
-                    res_item = f.result()
+                    res_item = f.result(timeout=8.0)
                     if isinstance(res_item, tuple) and res_item[0] == "FAIL":
                         failed_etfs.append(f"{res_item[1]} ({res_item[2]}): {res_item[3]}")
                     elif res_item:
                         etf_results.append(res_item)
                 except Exception as ex:
-                    failed_etfs.append(f"執行例外: {str(ex)}")
+                    failed_etfs.append(f"執行逾時或例外: {str(ex)}")
                 progress_bar.progress((idx + 1) / total_items)
 
         status_text.empty()
@@ -2659,7 +3044,7 @@ elif st.session_state.main_mode == "market":
                 name, code, desc = item
                 df_stk = fetch_and_calc(code)
                 if df_stk is not None:
-                    r = analyze_full_stock(code, df_stk, df_market, df_futures_bench, df_tsm, df_sox, global_forex, asset_type="tw")
+                    r = analyze_full_stock(code, df_stk, df_market, df_futures_bench, df_tsm, df_sox, global_forex, asset_type="tw", include_inst_suite=False)
                     return {
                         "名稱": name,
                         "代碼": code,
@@ -2681,13 +3066,13 @@ elif st.session_state.main_mode == "market":
             for idx, f in enumerate(futures):
                 status_text.text(f"連線更新中 ({idx+1}/{total_items})...")
                 try:
-                    res_item = f.result()
+                    res_item = f.result(timeout=8.0)
                     if isinstance(res_item, tuple) and res_item[0] == "FAIL":
                         failed_stocks.append(f"{res_item[1]} ({res_item[2]}): {res_item[3]}")
                     elif res_item:
                         scan_results.append(res_item)
                 except Exception as ex:
-                    failed_stocks.append(f"執行例外: {str(ex)}")
+                    failed_stocks.append(f"執行逾時或例外: {str(ex)}")
                 progress_bar.progress((idx + 1) / total_items)
 
         status_text.empty()
