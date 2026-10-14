@@ -56,7 +56,7 @@ st.markdown("""
         font-weight: 600 !important;
     }
 
-    /* 手機端強制維持雙欄/多欄等比並排 */
+    /* 手機端強制維持雙欄/多欄等比並排：覆蓋 Streamlit 預設 640px 100% 寬度限制 */
     @media (max-width: 768px) {
         div[data-testid="stHorizontalBlock"] {
             display: flex !important;
@@ -82,13 +82,13 @@ st.markdown("""
         }
     }
 
-    /* 按鈕大小與字級最佳化 */
-    div.stButton, div[data-testid="stLinkButton"] {
+    /* 按鈕大小與字級最佳化：緊湊雙列排版，文字單行完整顯示不溢出 */
+    div.stButton {
         width: 100% !important;
         min-width: 0 !important;
         max-width: 100% !important;
     }
-    div.stButton > button, div[data-testid="stFormSubmitButton"] > button, div[data-testid="stLinkButton"] > a {
+    div.stButton > button, div[data-testid="stFormSubmitButton"] > button {
         width: 100% !important;
         min-width: 0 !important;
         max-width: 100% !important;
@@ -103,11 +103,8 @@ st.markdown("""
         white-space: nowrap !important;
         overflow: hidden !important;
         text-overflow: ellipsis !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
+        display: block !important;
         box-sizing: border-box !important;
-        text-decoration: none !important;
     }
 
     div.stTextInput > div > div > input {
@@ -149,7 +146,7 @@ st.markdown("""
         padding: 0.45rem 0.75rem !important;
     }
 
-    /* 大盤統計表格樣式 */
+    /* Yahoo 風格大盤統計看盤室表格樣式 */
     .yahoo-stat-box {
         background-color: rgba(128, 128, 128, 0.06);
         border: 1px solid rgba(128, 128, 128, 0.2);
@@ -185,7 +182,7 @@ st.markdown("""
         line-height: 1.55;
     }
 
-    /* 機構研究報告卡片樣式 */
+    /* 權威機構研究報告卡片樣式 */
     .inst-report-box {
         background: rgba(26, 115, 232, 0.05);
         border: 1px solid rgba(26, 115, 232, 0.22);
@@ -230,7 +227,7 @@ if "authenticated" not in st.session_state:
 if "current_user" not in st.session_state:
     st.session_state.current_user = "預設操盤手"
 
-# 登入頁面：支援手機鍵盤 Enter 直接驗證進入
+# 登入頁面：使用 st.form 封裝，手機鍵盤按「Enter / 前往」直接驗證登入
 if not st.session_state.authenticated:
     st.title("🔐 內部量化決策系統")
     st.caption("請輸入您的「專屬使用者代號／暱稱」與「訪問密碼」以啟動個人獨立記憶空間")
@@ -528,7 +525,7 @@ def normalize_ticker(ticker: str):
         return t[:-3], "tse"
     return t, "us"
 
-# ----------------- 防卡死核心：共享單次 Yahoo Info 快取 -----------------
+# ----------------- 防卡死核心：共享單次 Yahoo Info 帶逾時保護快取 -----------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_yf_shared_info(ticker: str):
     def _worker():
@@ -763,7 +760,7 @@ def fetch_twse_market_dashboard():
 
     return result
 
-# ----------------- 即時分時走勢數據擷取與雙層圖表 -----------------
+# ----------------- 即時分時走勢數據擷取與雙層圖表渲染引擎 -----------------
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_intraday_series(ticker: str):
     try:
@@ -919,6 +916,7 @@ def fetch_bot_forex():
 def fetch_analyst_consensus(ticker: str):
     try:
         info = fetch_yf_shared_info(ticker)
+
         short_n = info.get("shortName")
         if short_n and ticker.upper() not in GLOBAL_STOCK_NAMES:
             GLOBAL_STOCK_NAMES[ticker.upper()] = str(short_n)[:10]
@@ -1919,7 +1917,7 @@ if "etf_category_filter" not in st.session_state:
 user_memory = get_user_data()
 current_briefing = load_market_briefing()
 
-# ----------------- 頂部導航與完整功能說明書 -----------------
+# ----------------- 頂部導航與完整功能暨版本說明書 -----------------
 st.title("📱 股期決策旗艦站 (跨市場機構版)")
 
 # 👤 個人專屬空間狀態列與快速切換器
@@ -1990,8 +1988,6 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與版
     2. **🚀 原生表單即時觸發與 Enter 自動跳轉**：
        - 登入、台股、美股與期貨皆採用原生 `st.form` 封裝，手機鍵盤按下「Enter / 前往」即可秒送出。
        - 點選任何「常用股票」或「最近查詢」按鈕，立即自動更新輸入框內容並完成 1 秒自動跳轉診斷。
-    3. **🌐 外部量化風險站直連按鈕**：
-       - 整合 Vercel 外部回測與美股隔夜風險中心，一鍵無縫跳轉，零本機資源消耗。
     """)
 
 # 🔥 置頂關鍵市場戰情焦點廣播卡
@@ -2008,15 +2004,6 @@ st.markdown(f"""
     </div>
 </div>
 """, unsafe_allow_html=True)
-
-# ★★★ 外部量化風險與美股隔夜決策站直連按鈕（一鍵新分頁跳轉，零崩潰風險） ★★★
-st.link_button(
-    "🌐 前往：台股技術量化與美股隔夜風險中心 (Vercel 外部系統)",
-    url="https://stocks-two-omega.vercel.app/",
-    type="primary",
-    use_container_width=True,
-    help="點此以新分頁開啟外部站：包含十大指標計分卡、VIX 252日分位數、美股隔夜加權模板與無前視偏誤回測中心"
-)
 
 # 置頂大盤即時分時看盤室按鈕 + 盤中自動更新開關
 top_c1, top_c2 = st.columns([1.4, 1.0])
@@ -2661,7 +2648,7 @@ if st.session_state.main_mode == "live_watch":
 elif st.session_state.main_mode == "tw_stock":
     st.subheader(f"🔍 台股全維度深度體檢（👤 {st.session_state.current_user}）")
 
-    # 快捷切換輔助函式：同步修改輸入框文字並觸發自動跳轉
+    # 快捷切換輔助函式：同步修改文字輸入框 SessionState，確保按鈕直覺秒跳轉
     def set_and_jump_tw_ticker(target_code: str):
         clean_code = target_code.strip().upper()
         if clean_code.isdigit():
@@ -3113,4 +3100,150 @@ elif st.session_state.main_mode == "market":
         progress_bar.empty()
 
         if scan_results:
-            df_res
+            df_res = pd.DataFrame(scan_results).sort_values(by="總評分", ascending=False).reset_index(drop=True)
+            for rank, row in df_res.iterrows():
+                badge = "🟢 優選" if row['總評分'] >= 75 else ("🟡 觀察" if row['總評分'] >= 60 else "🔴 暫緩")
+                with st.container():
+                    c1, c2, c3 = st.columns([2, 1, 1])
+                    c1.markdown(f"**#{rank+1} {row['名稱']} ({row['代碼']})**")
+                    c2.markdown(f"**{row['總評分']}** 分")
+                    c3.caption(badge)
+
+                    st.caption(f"📌 {row['產業地位']}")
+                    c_m1, c_m2, c_m3 = st.columns(3)
+                    c_m1.caption(f"現價: **{row['現價']:.2f}**")
+                    c_m2.caption(f"ROE: **{row['ROE']:.1f}%**" if row['ROE'] is not None else "ROE: --")
+                    c_m3.caption(f"PE: **{row['本益比']:.1f}x**" if (row['本益比'] is not None and row['本益比'] > 0) else "PE: --")
+                    st.caption(f"防守 (停損): **{row['建議防守']:.2f} 元**")
+                    st.write("---")
+
+        if failed_stocks:
+            with st.expander("⚠️ 部分標的連線未成功清單", expanded=False):
+                for err in failed_stocks:
+                    st.write(f"• {err}")
+
+# ================= 模式 7：📢 戰情訊息導入 ＆ 法說會與即時外電 =================
+elif st.session_state.main_mode == "events":
+    st.subheader("📢 關鍵市場戰情導入 ＆ 即時外電／法說會速查")
+
+    with st.expander("✍️ 【導入／更新置頂關鍵市場戰情分析訊息】", expanded=True):
+        st.caption("您可將最新的總經數據預警（如 CPI、非農、FOMC 決議）或盤勢關鍵分析貼於下方，點擊發布後將置頂於全站最上方。")
+        b_title_in = st.text_input("戰情標題", value=current_briefing["title"], key="brief_title_in")
+        b_content_in = st.text_area("戰情詳細分析內容", value=current_briefing["content"], height=140, key="brief_content_in")
+        b_author_in = st.text_input("發布者署名", value=st.session_state.current_user, key="brief_author_in")
+
+        b_btn1, b_btn2 = st.columns(2)
+        with b_btn1:
+            if st.button("🚀 發布並更新置頂戰情", type="primary", use_container_width=True, key="btn_pub_brief"):
+                save_market_briefing(b_title_in, b_content_in, b_author_in)
+                st.success("已成功更新全站置頂戰情焦點！")
+                st.rerun()
+        with b_btn2:
+            if st.button("🤖 結合即時指標自動生成草稿", use_container_width=True, key="btn_auto_synth_brief"):
+                tw_p = df_market.iloc[-1]['Close'] if df_market is not None else 0
+                tw_ma20 = df_market['MA20'].iloc[-1] if df_market is not None else 0
+                sox_chg = ((df_sox['Close'].iloc[-1] - df_sox['Close'].iloc[-2]) / df_sox['Close'].iloc[-2] * 100) if (df_sox is not None and len(df_sox) >= 2) else 0
+                synth_title = f"🔥 即時量化戰情：台股現報 {tw_p:,.0f} 點 vs 費半連動 ({sox_chg:+.2f}%) 關鍵位階解析"
+                synth_body = (
+                    f"台股加權指數目前位於 {tw_p:,.2f} 點（月線 20MA 支撐/壓力位階：{tw_ma20:,.2f} 點），"
+                    f"美股費城半導體指數近期變動 {sox_chg:+.2f}%，新台幣匯率現報 {global_forex.get('twd_rate') or 32.0:.2f}。\n\n"
+                    f"📌 **關鍵總經與操作劇本**：\n"
+                    f"• 今晚 (10/14 20:30) 美國 CPI 數據為短線多空分水嶺（市場預期整體 CPI 3.6%~3.7%、核心 CPI 2.4%）。\n"
+                    f"• 若數據溫和符合預期且指數守穩 {tw_ma20:,.0f} 點生命線，洗盤後有望迎來技術面反彈；反之若跌破防守位則嚴格控管部位。"
+                )
+                save_market_briefing(synth_title, synth_body, st.session_state.current_user)
+                st.rerun()
+
+    st.write("---")
+
+    st.markdown("### 🌐 總經與市場焦點外電即時導入 (Google News RSS)")
+    rss_q1, rss_q2 = st.columns(2)
+    with rss_q1:
+        if st.button("🔥 台股 / 費半 / 台積電", use_container_width=True, key="rss_btn_tw"):
+            st.session_state.rss_query = "台股 OR 費半 OR 台積電"
+    with rss_q2:
+        if st.button("🇺🇸 美國 CPI / 聯準會 / 美股", use_container_width=True, key="rss_btn_us"):
+            st.session_state.rss_query = "美國 CPI OR 聯準會 OR 那斯達克"
+
+    cur_rss_q = st.session_state.get("rss_query", "台股 OR 美國 CPI OR 費半 OR 台積電")
+    rss_items = fetch_live_macro_rss(cur_rss_q)
+    if rss_items:
+        for idx_r, r_it in enumerate(rss_items):
+            with st.container():
+                st.markdown(f"**[{r_it['title']}]({r_it['link']})**")
+                c_r1, c_r2 = st.columns([2.5, 1.5])
+                c_r1.caption(f"來源：{r_it['source']} ｜ {r_it['pub_date']}")
+                if c_r2.button("📌 導入為置頂戰情", key=f"pin_rss_{idx_r}", use_container_width=True):
+                    save_market_briefing(
+                        f"🔥 市場快訊導入：{r_it['title'][:28]}...",
+                        f"【外電焦點】{r_it['title']}（來源：{r_it['source']}）\n\n請密切留意該事件對台指期夜盤、美股科技股與次日開盤跳空幅度之連動影響。",
+                        st.session_state.current_user
+                    )
+                    st.rerun()
+                st.write("---")
+
+    st.markdown("### 🔍 個股最新重大訊息速查")
+    col_n_input, col_n_btn = st.columns([2.4, 1.6])
+    with col_n_input:
+        news_ticker = st.text_input("輸入查詢標的代碼", value="2330.TW", label_visibility="collapsed", key="news_search_input")
+    with col_n_btn:
+        news_clicked = st.button("📰 查個股新聞", type="primary", use_container_width=True, key="fetch_news_btn")
+
+    if news_clicked:
+        clean_news_t = news_ticker.strip().upper()
+        if clean_news_t.isdigit():
+            clean_news_t += ".TW"
+        with st.spinner("連線即時新聞庫檢索中..."):
+            news_items = fetch_stock_news(clean_news_t)
+            if news_items:
+                st.success(f"{get_stock_display_label(clean_news_t)} 最新重大訊息：")
+                for item in news_items:
+                    with st.container():
+                        st.markdown(f"**[{item['title']}]({item['link']})**")
+                        st.caption(f"{item['publisher']} ｜ {item['time']}")
+                        st.write("---")
+            else:
+                st.warning("暫查無該標的之即時重大訊息。")
+
+    st.write("---")
+    st.markdown("### 🗓️ 台股指標龍頭・法說會常態時程")
+    for call in EARNINGS_CALLS:
+        with st.container():
+            st.markdown(f"**{call['公司']}** ｜ {call['重要性']}")
+            st.info(f"📅 期間：{call['期間']}")
+            st.caption(f"🎯 核心看點：{call['重點觀測']}")
+            st.write("---")
+
+# ================= 模式 8：💱 全球外匯大盤 =================
+elif st.session_state.main_mode == "forex":
+    st.subheader("💱 全球外匯與熱錢資金即時儀表板")
+    st.caption("直連臺灣銀行官方牌告與全球匯率主機")
+
+    fx_info = global_forex
+
+    col_f1, col_f2, col_f3 = st.columns(3)
+    col_f1.metric("USD/TWD", f"{fx_info['twd_rate']:.2f}" if fx_info['twd_rate'] else "檢索中", f"{fx_info['twd_change']:+.2f}")
+    col_f2.metric("美元 (DXY)", f"{fx_info['dxy_rate']:.2f}" if fx_info['dxy_rate'] else "檢索中")
+    col_f3.metric("日圓 (JPY)", f"{fx_info['jpy_rate']:.2f}" if fx_info['jpy_rate'] else "檢索中")
+
+    st.caption(f"基準來源：**{fx_info['source']}**")
+    st.write("---")
+    st.info(f"**台幣狀態**：{fx_info['twd_status']}\n\n**趨勢**：{fx_info['twd_trend']}")
+    st.caption(f"• 美元結構：{fx_info['dxy_trend']}")
+    st.caption(f"• 日圓平倉風險：{fx_info['jpy_risk']}")
+
+    st.write("---")
+    st.markdown("### 📈 美元兌新台幣走勢與月線 (20MA)")
+    df_usdtwd = fetch_and_calc("USDTWD=X")
+    if df_usdtwd is None:
+        df_usdtwd = fetch_and_calc("TWD=X")
+
+    if df_usdtwd is not None:
+        st.line_chart(df_usdtwd[['Close', 'MA20']].dropna().tail(60))
+    else:
+        st.write("暫時無法取得匯率走勢。")
+
+# 盤中 30 秒自動刷新控制器
+if auto_refresh:
+    time.sleep(30)
+    st.rerun()
