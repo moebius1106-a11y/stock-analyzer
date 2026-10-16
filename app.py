@@ -323,6 +323,7 @@ def add_recent_history(market: str, ticker: str):
     data[key] = data[key][:6]
     save_user_data()
 
+# ★ 新增：手動清空指定市場之最近查詢紀錄
 def clear_recent_history(market: str):
     data = get_user_data()
     key = f"{market}_recent"
@@ -1890,7 +1891,7 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與版
     2. **🚀 原生表單即時觸發與 Enter 自動跳轉**：
        - 台股、美股與期貨皆採用原生 `st.form` 封裝，手機鍵盤按下「Enter / 前往」即可秒送出。
        - 點選任何「常用股票」或「最近查詢」按鈕，立即自動更新輸入框內容並完成 1 秒自動跳轉診斷。
-    3. **🌐 外部量化風險站直連按鈕（支援 LINE 自動外部開啟）**：
+    3. **🌐 外部量化風險站直連按鈕**：
        - 整合 Vercel 外部回測與美股隔夜風險中心，一鍵無縫跳轉，零本機資源消耗。
     4. **📋 證交所即時五檔盤口深度**：
        - 雙向深度能量條看板，即時視覺化呈現掛單厚度與大單防守價位。
@@ -1911,16 +1912,14 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ★ 外部量化風險站直連按鈕（採用 target="_top" 搭配 ?openExternalBrowser=1 破解 LINE 攔截）
-st.markdown("""
-<div style="width: 100%; margin-bottom: 0.5rem;">
-    <a href="https://stocks-two-omega.vercel.app/?openExternalBrowser=1" 
-       target="_top" 
-       style="display: flex; align-items: center; justify-content: center; width: 100%; min-height: 2.65rem; background-color: #1a73e8; color: #ffffff !important; font-size: 0.94rem; font-weight: 700; border-radius: 9px; text-decoration: none; box-sizing: border-box; padding: 0.3rem 0.35rem; line-height: 1.2;">
-       🌐 前往：台股技術量化與美股隔夜風險中心 (Vercel 外部系統)
-    </a>
-</div>
-""", unsafe_allow_html=True)
+# 外部量化風險與美股隔夜決策站直連按鈕
+st.link_button(
+    "🌐 前往：台股技術量化與美股隔夜風險中心 (Vercel 外部系統)",
+    url="https://stocks-two-omega.vercel.app/",
+    type="primary",
+    use_container_width=True,
+    help="點此以新分頁開啟外部站：包含十大指標計分卡、VIX 252日分位數、美股隔夜加權模板與無前視偏誤回測中心"
+)
 
 # 置頂大盤即時分時看盤室按鈕 + 盤中自動更新開關
 top_c1, top_c2 = st.columns([1.4, 1.0])
@@ -1954,8 +1953,8 @@ with r2_c2:
 
 r3_c1, r3_c2 = st.columns(2)
 with r3_c1:
-    if st.button("📊 ETF 專區", type="primary" if st.session_state.etf_category_filter == "全部" else "secondary", use_container_width=True, key="filter_etf_all"):
-        st.session_state.etf_category_filter = "全部"
+    if st.button("📊 ETF 專區", type="primary" if st.session_state.main_mode == "etf" else "secondary", use_container_width=True, key="m_nav_etf"):
+        st.session_state.main_mode = "etf"
         st.rerun()
 with r3_c2:
     if st.button("💎 體質雷達", type="primary" if st.session_state.main_mode == "market" else "secondary", use_container_width=True, key="m_nav_market"):
@@ -2618,6 +2617,7 @@ elif st.session_state.main_mode == "tw_stock":
 
     tw_recents = [r for r in user_memory.get("tw_recent", []) if r not in tw_favs][:4]
     if tw_recents:
+        # ★ 標題列右側加上手動清除按鈕
         rh_c1, rh_c2 = st.columns([3.2, 0.8])
         with rh_c1:
             st.caption("🕒 **最近查詢紀錄**：")
@@ -2716,6 +2716,7 @@ elif st.session_state.main_mode == "us_stock":
 
     us_recents = [r for r in user_memory.get("us_recent", []) if r not in us_favs][:4]
     if us_recents:
+        # ★ 標題列右側加上手動清除按鈕
         urh_c1, urh_c2 = st.columns([3.2, 0.8])
         with urh_c1:
             st.caption("🕒 **最近查詢紀錄**：")
