@@ -323,6 +323,13 @@ def add_recent_history(market: str, ticker: str):
     data[key] = data[key][:6]
     save_user_data()
 
+# ★ 新增：手動清空指定市場之最近查詢紀錄
+def clear_recent_history(market: str):
+    data = get_user_data()
+    key = f"{market}_recent"
+    data[key] = []
+    save_user_data()
+
 def toggle_favorite_stock(market: str, ticker: str):
     data = get_user_data()
     key = f"{market}_favorites"
@@ -2196,7 +2203,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
     risk_pct = (risk_unit / res['close']) * 100
     c4.metric("最大預期風險", f"{risk_pct:.2f}%")
 
-    # 0. 即時分時走勢圖 & 台股五檔委買賣明細 (升級為雙向深度能量條看板)
+    # 0. 即時分時走勢圖 & 台股五檔委買賣明細 (雙向深度能量條看板)
     with st.expander("📺 【即時分時走勢圖 (含昨收平盤線) ＆ 五檔委買賣明細】", expanded=True):
         chart_ticker = "WTX=F" if mode_type == "futures" else (ticker_raw or "2330.TW")
         if mode_type == "futures" and df_futures_bench is None:
@@ -2610,7 +2617,15 @@ elif st.session_state.main_mode == "tw_stock":
 
     tw_recents = [r for r in user_memory.get("tw_recent", []) if r not in tw_favs][:4]
     if tw_recents:
-        st.caption("🕒 **最近查詢紀錄**：")
+        # ★ 標題列右側加上手動清除按鈕
+        rh_c1, rh_c2 = st.columns([3.2, 0.8])
+        with rh_c1:
+            st.caption("🕒 **最近查詢紀錄**：")
+        with rh_c2:
+            if st.button("🗑️ 清除", key="btn_clear_tw_rec", use_container_width=True, help="點此清空最近查詢歷史"):
+                clear_recent_history("tw")
+                st.rerun()
+
         rec_cols = st.columns(2)
         for r_idx, r_code in enumerate(tw_recents):
             col_rec_target = rec_cols[r_idx % 2]
@@ -2701,7 +2716,15 @@ elif st.session_state.main_mode == "us_stock":
 
     us_recents = [r for r in user_memory.get("us_recent", []) if r not in us_favs][:4]
     if us_recents:
-        st.caption("🕒 **最近查詢紀錄**：")
+        # ★ 標題列右側加上手動清除按鈕
+        urh_c1, urh_c2 = st.columns([3.2, 0.8])
+        with urh_c1:
+            st.caption("🕒 **最近查詢紀錄**：")
+        with urh_c2:
+            if st.button("🗑️ 清除", key="btn_clear_us_rec", use_container_width=True, help="點此清空美股最近查詢歷史"):
+                clear_recent_history("us")
+                st.rerun()
+
         rec_u_cols = st.columns(2)
         for ru_idx, ru_code in enumerate(us_recents):
             col_rec_u = rec_u_cols[ru_idx % 2]
