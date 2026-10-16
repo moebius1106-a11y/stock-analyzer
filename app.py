@@ -2165,7 +2165,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
     risk_unit = max(res['close'] - res['stop_loss'], res['close'] * 0.015)
     target_1 = res['close'] + (1.5 * risk_unit)
     an_data = res['analyst_data']
-    stable_key_suffix = f"{mode_type}_{ticker_raw or 'default'}_{st.session_state.current_user}"
+    stable_key_suffix = f"{mode_type}_{ticker_raw or 'default'}"
 
     if mode_type == "futures":
         currency_sym = "點"
@@ -2183,7 +2183,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
 
     disp_header = get_stock_display_label(ticker_raw, is_fav=False) if ticker_raw else ""
     if disp_header:
-        st.markdown(f"**📌 當前診斷標的：`{disp_header}`** ｜ 👤 操盤手：`{st.session_state.current_user}`")
+        st.markdown(f"**📌 當前診斷標的：`{disp_header}`**")
 
     if res.get("live_info"):
         status_badge = res['live_info'].get('status_label', '⚪ 歷史報價')
@@ -2197,7 +2197,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         m_key = "tw" if mode_type == "tw" else "us"
         cur_favs = user_memory.get(f"{m_key}_favorites", [])
         is_fav = ticker_raw in cur_favs
-        fav_label = f"⭐ 已加入【{st.session_state.current_user}】的常用清單 (點此移出)" if is_fav else f"☆ 收藏至【{st.session_state.current_user}】的常用清單"
+        fav_label = "⭐ 已加入常用清單 (點此移出)" if is_fav else "☆ 收藏至常用清單"
         if st.button(fav_label, use_container_width=True, key=f"btn_fav_toggle_{stable_key_suffix}"):
             toggle_favorite_stock(m_key, ticker_raw)
             st.rerun()
@@ -2388,7 +2388,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         """)
 
     # 7. 部位風控計算機
-    with st.expander(f"💰 【部位風控與建議{unit_name}計算機（已載入 {st.session_state.current_user} 專屬參數）】", expanded=False):
+    with st.expander(f"💰 【部位風控與建議{unit_name}計算機】", expanded=False):
         col_cap, col_risk = st.columns(2)
         with col_cap:
             if mode_type == "futures":
@@ -2601,7 +2601,7 @@ if st.session_state.main_mode == "live_watch":
 
 # ================= 模式 1：🔍 台股診斷 =================
 elif st.session_state.main_mode == "tw_stock":
-    st.subheader(f"🔍 台股全維度深度體檢（👤 {st.session_state.current_user}）")
+    st.subheader("🔍 台股全維度深度體檢")
 
     def set_and_jump_tw_ticker(target_code: str):
         clean_code = target_code.strip().upper()
@@ -2613,7 +2613,7 @@ elif st.session_state.main_mode == "tw_stock":
         st.session_state.auto_run_tw = True
 
     tw_favs = user_memory.get("tw_favorites", ["2330.TW", "2454.TW", "2317.TW", "0050.TW"])
-    st.caption(f"⭐ **【{st.session_state.current_user}】的常用股票清單**（點選一秒自動診斷）：")
+    st.caption("⭐ **常用股票清單**（點選一秒自動診斷）：")
 
     fav_cols = st.columns(2)
     for idx, fav_code in enumerate(tw_favs[:6]):
@@ -2627,7 +2627,7 @@ elif st.session_state.main_mode == "tw_stock":
     if tw_recents:
         rh_c1, rh_c2 = st.columns([3.2, 0.8])
         with rh_c1:
-            st.caption(f"🕒 **【{st.session_state.current_user}】的最近查詢紀錄**：")
+            st.caption("🕒 **最近查詢紀錄**：")
         with rh_c2:
             if st.button("🗑️ 清除", key="btn_clear_tw_rec", use_container_width=True, help="點此清空最近查詢歷史"):
                 clear_recent_history("tw")
@@ -2656,7 +2656,7 @@ elif st.session_state.main_mode == "tw_stock":
         with col_btn:
             exec_clicked = st.form_submit_button("🚀 診斷台股", type="primary", use_container_width=True)
 
-    with st.expander(f"⚙️ 管理【{st.session_state.current_user}】的台股常用清單", expanded=False):
+    with st.expander("⚙️ 管理台股常用清單", expanded=False):
         col_m1, col_m2 = st.columns([2.4, 1.6])
         new_fav_in = col_m1.text_input("新增常用代碼", placeholder="例：2603.TW", key="new_tw_fav_in")
         if col_m2.button("➕ 新增至常用", use_container_width=True, key="btn_add_tw_fav"):
@@ -2669,7 +2669,7 @@ elif st.session_state.main_mode == "tw_stock":
                 st.success(f"已加入 {clean_new_fav}！")
                 st.rerun()
 
-        st.caption("點擊下方按鈕可從您的個人常用清單中移出：")
+        st.caption("點擊下方按鈕可從常用清單中移出：")
         del_cols = st.columns(2)
         for d_idx, d_code in enumerate(user_memory["tw_favorites"]):
             del_label = f"❌ {get_stock_display_label(d_code, is_fav=False)}"
@@ -2701,7 +2701,7 @@ elif st.session_state.main_mode == "tw_stock":
 
 # ================= 模式 2：🇺🇸 美股診斷 =================
 elif st.session_state.main_mode == "us_stock":
-    st.subheader(f"🇺🇸 美股全維度深度體檢（👤 {st.session_state.current_user}）")
+    st.subheader("🇺🇸 美股全維度深度體檢")
 
     def set_and_jump_us_ticker(target_code: str):
         clean_code = target_code.strip().upper()
@@ -2711,7 +2711,7 @@ elif st.session_state.main_mode == "us_stock":
         st.session_state.auto_run_us = True
 
     us_favs = user_memory.get("us_favorites", ["NVDA", "AAPL", "MSFT", "TSLA"])
-    st.caption(f"⭐ **【{st.session_state.current_user}】的常用美股清單**（點選一秒自動診斷）：")
+    st.caption("⭐ **常用美股清單**（點選一秒自動診斷）：")
 
     fav_u_cols = st.columns(2)
     for idx, fav_u_code in enumerate(us_favs[:6]):
@@ -2725,7 +2725,7 @@ elif st.session_state.main_mode == "us_stock":
     if us_recents:
         urh_c1, urh_c2 = st.columns([3.2, 0.8])
         with urh_c1:
-            st.caption(f"🕒 **【{st.session_state.current_user}】的最近查詢紀錄**：")
+            st.caption("🕒 **最近查詢紀錄**：")
         with urh_c2:
             if st.button("🗑️ 清除", key="btn_clear_us_rec", use_container_width=True, help="點此清空美股最近查詢歷史"):
                 clear_recent_history("us")
@@ -2756,7 +2756,7 @@ elif st.session_state.main_mode == "us_stock":
 
     cleaned_us_ticker = raw_us_input.strip().upper()
 
-    with st.expander(f"⚙️ 管理【{st.session_state.current_user}】的美股常用清單", expanded=False):
+    with st.expander("⚙️ 管理美股常用清單", expanded=False):
         col_mu1, col_mu2 = st.columns([2.4, 1.6])
         new_u_fav_in = col_mu1.text_input("新增美股代碼", placeholder="例：AMD", key="new_us_fav_in")
         if col_mu2.button("➕ 新增至常用", use_container_width=True, key="btn_add_us_fav"):
@@ -3007,7 +3007,7 @@ elif st.session_state.main_mode == "etf":
                 for err in failed_etfs:
                     st.write(f"• {err}")
 
-    with st.expander("🧮 定期定額「微笑曲線」扣款計算基", expanded=False):
+    with st.expander("🧮 定期定額「微笑曲線」扣款計算機", expanded=False):
         etf_cap = st.number_input("每月預算 (NTD)", value=20000, step=5000, key="etf_monthly_budget")
         etf_state = st.radio("當前位階：", ["常態整理（月線與季線之間）", "大幅拉回（低於季線 5% 以上）", "高檔大漲（高於月線 6% 以上）"], key="etf_state_radio")
         if "大幅拉回" in etf_state:
@@ -3097,7 +3097,7 @@ elif st.session_state.main_mode == "events":
         st.caption("您可將最新的總經數據預警（如 CPI、非農、FOMC 決議）或盤勢關鍵分析貼於下方，點擊發布後將置頂於全站最上方。")
         b_title_in = st.text_input("戰情標題", value=current_briefing["title"], key="brief_title_in")
         b_content_in = st.text_area("戰情詳細分析內容", value=current_briefing["content"], height=140, key="brief_content_in")
-        b_author_in = st.text_input("發布者署名", value=st.session_state.current_user, key="brief_author_in")
+        b_author_in = st.text_input("發布者署名", value="系統策略中心", key="brief_author_in")
 
         b_btn1, b_btn2 = st.columns(2)
         with b_btn1:
@@ -3118,7 +3118,7 @@ elif st.session_state.main_mode == "events":
                     f"• 今晚 (10/14 20:30) 美國 CPI 數據為短線多空分水嶺（市場預期整體 CPI 3.6%~3.7%、核心 CPI 2.4%）。\n"
                     f"• 若數據溫和符合預期且指數守穩 {tw_ma20:,.0f} 點生命線，洗盤後有望迎來技術面反彈；反之若跌破防守位則嚴格控管部位。"
                 )
-                save_market_briefing(synth_title, synth_body, st.session_state.current_user)
+                save_market_briefing(synth_title, synth_body, "系統策略中心")
                 st.rerun()
 
     st.write("---")
@@ -3144,7 +3144,7 @@ elif st.session_state.main_mode == "events":
                     save_market_briefing(
                         f"🔥 市場快訊導入：{r_it['title'][:28]}...",
                         f"【外電焦點】{r_it['title']}（來源：{r_it['source']}）\n\n請密切留意該事件對台指期夜盤、美股科技股與次日開盤跳空幅度之連動影響。",
-                        st.session_state.current_user
+                        "系統策略中心"
                     )
                     st.rerun()
                 st.write("---")
