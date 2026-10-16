@@ -1955,7 +1955,7 @@ with r2_c2:
 r3_c1, r3_c2 = st.columns(2)
 with r3_c1:
     if st.button("📊 ETF 專區", type="primary" if st.session_state.etf_category_filter == "全部" else "secondary", use_container_width=True, key="filter_etf_all"):
-        st.session_state.main_mode = "etf"
+        st.session_state.etf_category_filter = "全部"
         st.rerun()
 with r3_c2:
     if st.button("💎 體質雷達", type="primary" if st.session_state.main_mode == "market" else "secondary", use_container_width=True, key="m_nav_market"):
