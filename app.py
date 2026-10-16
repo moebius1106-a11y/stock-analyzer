@@ -201,63 +201,6 @@ st.markdown("""
 
 TAIPEI_TZ = timezone(timedelta(hours=8))
 
-# ----------------- 多使用者身分驗證與通行密碼防護 -----------------
-try:
-    ACCESS_PASSWORD = st.secrets["PASSWORD"]
-except Exception:
-    ACCESS_PASSWORD = None
-
-try:
-    CUSTOM_USERS_DICT = dict(st.secrets.get("USERS", {}))
-except Exception:
-    CUSTOM_USERS_DICT = {}
-
-if ACCESS_PASSWORD is None and not CUSTOM_USERS_DICT:
-    st.error("🚨 **系統安全性錯誤：未檢測到 Streamlit Secrets [PASSWORD] 設定！**")
-    st.markdown("""
-    **【解決步驟】**：
-    1. 前往 Streamlit Cloud 管理後台（App Settings > Secrets）。
-    2. 新增設定內容：
-    ```toml
-    PASSWORD = "您的專屬密碼"
-    ```
-    3. 儲存後重新整理本頁面即可正常啟動。
-    """)
-    st.stop()
-
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-if "current_user" not in st.session_state:
-    st.session_state.current_user = "預設操盤手"
-
-# 登入頁面：使用 st.form 封裝，手機鍵盤按「Enter / 前往」直接驗證登入
-if not st.session_state.authenticated:
-    st.title("🔐 內部量化決策系統")
-    st.caption("請輸入您的「專屬使用者代號／暱稱」與「訪問密碼」以啟動個人獨立記憶空間")
-    
-    with st.form("login_form", clear_on_submit=False):
-        user_id_input = st.text_input("👤 使用者代號 / 暱稱（不同人將自動分開記錄自選股與資金設定）", value="", placeholder="例：Alex、王董、VIP01", key="login_user_id")
-        pwd = st.text_input("🔑 訪問密碼", type="password", key="login_pwd")
-        login_btn = st.form_submit_button("🔓 登入個人決策空間", type="primary", use_container_width=True)
-
-        if login_btn:
-            clean_uid = user_id_input.strip() if user_id_input.strip() else "預設操盤手"
-            is_valid = False
-            if clean_uid in CUSTOM_USERS_DICT and pwd == str(CUSTOM_USERS_DICT[clean_uid]):
-                is_valid = True
-            elif ACCESS_PASSWORD is not None and pwd == str(ACCESS_PASSWORD):
-                is_valid = True
-
-            if is_valid:
-                st.session_state.authenticated = True
-                st.session_state.current_user = clean_uid
-                if "user_data" in st.session_state:
-                    del st.session_state["user_data"]
-                st.rerun()
-            else:
-                st.error("密碼錯誤或使用者代號未授權，請重新輸入。")
-    st.stop()
-
 # ----------------- 全市場股票中文名稱對照字典 -----------------
 GLOBAL_STOCK_NAMES = {
     "2330.TW": "台積電", "2330": "台積電",
@@ -326,11 +269,10 @@ def get_stock_display_label(ticker: str, is_fav=False):
         return f"{prefix}{name} ({clean_code})"
     return f"{prefix}{clean_code}"
 
-# ----------------- 多使用者分流記憶引擎 -----------------
-PROFILES_FILE = "user_profiles.json"
-LEGACY_HISTORY_FILE = "user_history.json"
+# ----------------- 隱私化本機偏好儲存引擎 (完全去識別化) -----------------
+SETTINGS_FILE = "user_settings.json"
 
-def get_default_profile():
+def get_default_settings():
     return {
         "tw_favorites": ["2330.TW", "2454.TW", "2317.TW", "0050.TW"],
         "tw_recent": ["2330.TW", "2454.TW"],
@@ -344,61 +286,32 @@ def get_default_profile():
         "last_active": datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M")
     }
 
-def load_all_profiles():
-    all_data = {"users": {}}
-    if os.path.exists(PROFILES_FILE):
-        try:
-            with open(PROFILES_FILE, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                if isinstance(loaded, dict) and "users" in loaded:
-                    all_data = loaded
-        except Exception:
-            pass
-    elif os.path.exists(LEGACY_HISTORY_FILE):
-        try:
-            with open(LEGACY_HISTORY_FILE, "r", encoding="utf-8") as f:
-                legacy = json.load(f)
-                base_p = get_default_profile()
-                for k in ("tw_favorites", "tw_recent", "us_favorites", "us_recent"):
-                    if k in legacy and isinstance(legacy[k], list):
-                        base_p[k] = legacy[k]
-                all_data["users"]["預設操盤手"] = base_p
-        except Exception:
-            pass
-    return all_data
-
 def get_user_data():
-    uid = st.session_state.get("current_user", "預設操盤手")
-    default_p = get_default_profile()
-    if "user_data" not in st.session_state or st.session_state.get("loaded_uid") != uid:
-        all_profiles = load_all_profiles()
-        user_p = all_profiles["users"].get(uid, {})
-        for k, v in default_p.items():
-            if k not in user_p:
-                user_p[k] = v
-        st.session_state.user_data = user_p
-        st.session_state.loaded_uid = uid
+    if "user_data" not in st.session_state:
+        default_s = get_default_settings()
+        if os.path.exists(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        for k, v in default_s.items():
+                            if k not in loaded:
+                                loaded[k] = v
+                        st.session_state.user_data = loaded
+                        return st.session_state.user_data
+            except Exception:
+                pass
+        st.session_state.user_data = default_s
     return st.session_state.user_data
 
 def save_user_data():
-    uid = st.session_state.get("current_user", "預設操盤手")
     if "user_data" in st.session_state:
         try:
             st.session_state.user_data["last_active"] = datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M")
-            all_profiles = load_all_profiles()
-            all_profiles["users"][uid] = st.session_state.user_data
-            with open(PROFILES_FILE, "w", encoding="utf-8") as f:
-                json.dump(all_profiles, f, ensure_ascii=False, indent=2)
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(st.session_state.user_data, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
-
-def get_registered_user_list():
-    all_profiles = load_all_profiles()
-    users = list(all_profiles.get("users", {}).keys())
-    cur = st.session_state.get("current_user", "預設操盤手")
-    if cur not in users:
-        users.insert(0, cur)
-    return users
 
 def add_recent_history(market: str, ticker: str):
     data = get_user_data()
@@ -438,7 +351,7 @@ DEFAULT_STRATEGIC_BRIEFING = {
         "• **核心 CPI 年增率**：市場預期維持在 **2.4%** 溫和水準。\n"
         "• **操作應變劇本**：只要最終開獎數字符合預期或核心 CPI 表現溫和，台股近期由美股費半連跌引發的恐慌性修正就有望落底並迎來強勢反彈；反之若核心 CPI 意外跳升破 2.6%，則需嚴守月線與 ATR 停損紀律、保留現金。"
     ),
-    "author": "系統首席策略中心",
+    "author": "系統策略中心",
     "updated_at": "2026-10-14 12:20",
     "level": "critical"
 }
@@ -1928,27 +1841,8 @@ current_briefing = load_market_briefing()
 # ----------------- 頂部導航與功能設置 -----------------
 st.title("📱 股期決策旗艦站 (跨市場機構版)")
 
-# 👤 個人專屬空間狀態列與快速切換器
-with st.expander(f"👤 當前使用者：【{st.session_state.current_user}】（點此切換使用者／管理個人資金與備份）", expanded=False):
-    st.caption("每位使用者擁有完全獨立的常用股票、查詢歷史、預設操作本金與個人看盤筆記，彼此互不干擾。")
-    u_c1, u_c2 = st.columns([2.2, 1.8])
-    with u_c1:
-        known_users = get_registered_user_list()
-        new_or_switch_uid = st.text_input("輸入要切換或新建的使用者名稱", value=st.session_state.current_user, key="switch_uid_input")
-    with u_c2:
-        st.write("")
-        if st.button("🔄 立即切換使用者", type="primary", use_container_width=True, key="btn_switch_uid"):
-            target_u = new_or_switch_uid.strip()
-            if target_u:
-                st.session_state.current_user = target_u
-                if "user_data" in st.session_state:
-                    del st.session_state["user_data"]
-                st.rerun()
-
-    if len(known_users) > 1:
-        st.caption(f"📋 已建立之使用者檔案：`{'`、`'.join(known_users)}`")
-
-    st.markdown("#### 💰 個人預設風控本金與筆記設定（自動綁定您的帳號）")
+# ⚙️ 個人風控本金、看盤備忘錄與資料備份 (去識別化，不顯示個別使用者)
+with st.expander("⚙️ 個人風控本金、看盤備忘錄與資料備份", expanded=False):
     p_c1, p_c2, p_c3 = st.columns(3)
     with p_c1:
         u_cap_tw = st.number_input("台股預設本金(NTD)", value=int(user_memory.get("capital_tw", 1000000)), step=100000, key="prof_cap_tw")
@@ -1957,26 +1851,26 @@ with st.expander(f"👤 當前使用者：【{st.session_state.current_user}】�
     with p_c3:
         u_risk = st.number_input("單筆風險(%)", min_value=0.5, max_value=5.0, value=float(user_memory.get("risk_pct", 1.0)), step=0.1, key="prof_risk")
 
-    u_note = st.text_area("📝 個人專屬看盤備忘錄", value=user_memory.get("personal_note", ""), height=68, key="prof_note")
-    if st.button("💾 儲存個人專屬設定", use_container_width=True, key="btn_save_profile"):
+    u_note = st.text_area("📝 個人看盤備忘錄", value=user_memory.get("personal_note", ""), height=68, key="prof_note")
+    if st.button("💾 儲存本機偏好設定", use_container_width=True, key="btn_save_profile"):
         user_memory["capital_tw"] = u_cap_tw
         user_memory["capital_us"] = u_cap_us
         user_memory["risk_pct"] = u_risk
         user_memory["personal_note"] = u_note
         save_user_data()
-        st.success(f"已儲存【{st.session_state.current_user}】的專屬參數！")
+        st.success("已儲存偏好參數！")
 
-    with st.expander("📦 匯出 / 匯入個人設定備份碼（防雲端休眠重置）", expanded=False):
+    with st.expander("📦 匯出 / 匯入設定備份碼（防雲端休眠重置）", expanded=False):
         backup_str = json.dumps(user_memory, ensure_ascii=False)
         st.code(backup_str, language="json")
         restore_str = st.text_input("貼上備份碼一鍵還原", placeholder='{"tw_favorites": ...}', key="restore_json_in")
-        if st.button("📥 確認還原個人設定", key="btn_restore_json"):
+        if st.button("📥 確認還原設定", key="btn_restore_json"):
             try:
                 restored = json.loads(restore_str)
                 if isinstance(restored, dict):
                     st.session_state.user_data.update(restored)
                     save_user_data()
-                    st.success("個人資料已成功還原！")
+                    st.success("設定資料已成功還原！")
                     st.rerun()
             except Exception:
                 st.error("備份碼格式不正確，請確認複製完整。")
@@ -2067,8 +1961,8 @@ with r2_c2:
 
 r3_c1, r3_c2 = st.columns(2)
 with r3_c1:
-    if st.button("📊 ETF 專區", type="primary" if st.session_state.main_mode == "etf" else "secondary", use_container_width=True, key="filter_etf_all"):
-        st.session_state.main_mode = "etf"
+    if st.button("📊 ETF 專區", type="primary" if st.session_state.etf_category_filter == "全部" else "secondary", use_container_width=True, key="filter_etf_all"):
+        st.session_state.etf_category_filter = "全部"
         st.rerun()
 with r3_c2:
     if st.button("💎 體質雷達", type="primary" if st.session_state.main_mode == "market" else "secondary", use_container_width=True, key="m_nav_market"):
@@ -2775,7 +2669,7 @@ elif st.session_state.main_mode == "tw_stock":
                 st.success(f"已加入 {clean_new_fav}！")
                 st.rerun()
 
-        st.caption("點擊下方按鈕可從常用清單中移出：")
+        st.caption("點擊下方按鈕可從您的個人常用清單中移出：")
         del_cols = st.columns(2)
         for d_idx, d_code in enumerate(user_memory["tw_favorites"]):
             del_label = f"❌ {get_stock_display_label(d_code, is_fav=False)}"
@@ -3113,7 +3007,7 @@ elif st.session_state.main_mode == "etf":
                 for err in failed_etfs:
                     st.write(f"• {err}")
 
-    with st.expander("🧮 定期定額「微笑曲線」扣款計算機", expanded=False):
+    with st.expander("🧮 定期定額「微笑曲線」扣款計算基", expanded=False):
         etf_cap = st.number_input("每月預算 (NTD)", value=20000, step=5000, key="etf_monthly_budget")
         etf_state = st.radio("當前位階：", ["常態整理（月線與季線之間）", "大幅拉回（低於季線 5% 以上）", "高檔大漲（高於月線 6% 以上）"], key="etf_state_radio")
         if "大幅拉回" in etf_state:
@@ -3203,7 +3097,7 @@ elif st.session_state.main_mode == "events":
         st.caption("您可將最新的總經數據預警（如 CPI、非農、FOMC 決議）或盤勢關鍵分析貼於下方，點擊發布後將置頂於全站最上方。")
         b_title_in = st.text_input("戰情標題", value=current_briefing["title"], key="brief_title_in")
         b_content_in = st.text_area("戰情詳細分析內容", value=current_briefing["content"], height=140, key="brief_content_in")
-        b_author_in = st.text_input("發布者署名", value="系統策略中心", key="brief_author_in")
+        b_author_in = st.text_input("發布者署名", value=st.session_state.current_user, key="brief_author_in")
 
         b_btn1, b_btn2 = st.columns(2)
         with b_btn1:
@@ -3224,7 +3118,7 @@ elif st.session_state.main_mode == "events":
                     f"• 今晚 (10/14 20:30) 美國 CPI 數據為短線多空分水嶺（市場預期整體 CPI 3.6%~3.7%、核心 CPI 2.4%）。\n"
                     f"• 若數據溫和符合預期且指數守穩 {tw_ma20:,.0f} 點生命線，洗盤後有望迎來技術面反彈；反之若跌破防守位則嚴格控管部位。"
                 )
-                save_market_briefing(synth_title, synth_body, "系統策略中心")
+                save_market_briefing(synth_title, synth_body, st.session_state.current_user)
                 st.rerun()
 
     st.write("---")
@@ -3250,7 +3144,7 @@ elif st.session_state.main_mode == "events":
                     save_market_briefing(
                         f"🔥 市場快訊導入：{r_it['title'][:28]}...",
                         f"【外電焦點】{r_it['title']}（來源：{r_it['source']}）\n\n請密切留意該事件對台指期夜盤、美股科技股與次日開盤跳空幅度之連動影響。",
-                        "系統策略中心"
+                        st.session_state.current_user
                     )
                     st.rerun()
                 st.write("---")
