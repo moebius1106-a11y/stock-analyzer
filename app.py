@@ -1911,14 +1911,16 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ★ 外部量化風險站直連按鈕（加上 ?openExternalBrowser=1 破解 LINE 攔截）
-st.link_button(
-    "🌐 前往：台股技術量化與美股隔夜風險中心 (Vercel 外部系統)",
-    url="https://stocks-two-omega.vercel.app/?openExternalBrowser=1",
-    type="primary",
-    use_container_width=True,
-    help="點此以手機預設瀏覽器開啟外部站：包含十大指標計分卡、VIX 252日分位數、美股隔夜加權模板與無前視偏誤回測中心"
-)
+# ★ 外部量化風險站直連按鈕（採用 target="_top" 搭配 ?openExternalBrowser=1 破解 LINE 攔截）
+st.markdown("""
+<div style="width: 100%; margin-bottom: 0.5rem;">
+    <a href="https://stocks-two-omega.vercel.app/?openExternalBrowser=1" 
+       target="_top" 
+       style="display: flex; align-items: center; justify-content: center; width: 100%; min-height: 2.65rem; background-color: #1a73e8; color: #ffffff !important; font-size: 0.94rem; font-weight: 700; border-radius: 9px; text-decoration: none; box-sizing: border-box; padding: 0.3rem 0.35rem; line-height: 1.2;">
+       🌐 前往：台股技術量化與美股隔夜風險中心 (Vercel 外部系統)
+    </a>
+</div>
+""", unsafe_allow_html=True)
 
 # 置頂大盤即時分時看盤室按鈕 + 盤中自動更新開關
 top_c1, top_c2 = st.columns([1.4, 1.0])
@@ -1952,7 +1954,7 @@ with r2_c2:
 
 r3_c1, r3_c2 = st.columns(2)
 with r3_c1:
-    if st.button("📊 ETF 專區", type="primary" if st.session_state.etf_category_filter == "全部" else "secondary", use_container_width=True, key="m_nav_etf"):
+    if st.button("📊 ETF 專區", type="primary" if st.session_state.etf_category_filter == "全部" else "secondary", use_container_width=True, key="filter_etf_all"):
         st.session_state.main_mode = "etf"
         st.rerun()
 with r3_c2:
