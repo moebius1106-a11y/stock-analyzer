@@ -269,7 +269,7 @@ def get_stock_display_label(ticker: str, is_fav=False):
         return f"{prefix}{name} ({clean_code})"
     return f"{prefix}{clean_code}"
 
-# ----------------- 隱私化本機偏好儲存引擎 (完全去識別化) -----------------
+# ----------------- 隱私化本機偏好儲存引擎 (去識別化) -----------------
 SETTINGS_FILE = "user_settings.json"
 
 def get_default_settings():
@@ -1543,7 +1543,7 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
     last_stk = df_stock.iloc[-1]
     prev_stk = df_stock.iloc[-2] if len(df_stock) >= 2 else last_stk
     
-    # ★ 核心防護 1：嚴格確保 close 價格大於 0，若異常則回溯有效值，根除零除錯誤
+    # 核心防護 1：嚴格確保 close 價格大於 0，若異常則回溯有效值
     close = safe_float(last_stk['Close'])
     if close <= 0:
         pos_closes = df_stock['Close'][df_stock['Close'] > 0]
@@ -1852,7 +1852,7 @@ current_briefing = load_market_briefing()
 # ----------------- 頂部導航與功能設置 -----------------
 st.title("📱 股期決策旗艦站 (跨市場機構版)")
 
-# ⚙️ 個人風控本金、看盤備忘錄與資料備份 (完全去識別化，不顯示個別使用者)
+# ⚙️ 個人風控本金、看盤備忘錄與資料備份 (去識別化，不顯示個別使用者)
 with st.expander("⚙️ 個人風控本金、看盤備忘錄與資料備份", expanded=False):
     p_c1, p_c2, p_c3 = st.columns(3)
     with p_c1:
@@ -1972,8 +1972,9 @@ with r2_c2:
 
 r3_c1, r3_c2 = st.columns(2)
 with r3_c1:
-    if st.button("📊 ETF 專區", type="primary" if st.session_state.etf_category_filter == "全部" else "secondary", use_container_width=True, key="filter_etf_all"):
-        st.session_state.etf_category_filter = "全部"
+    # ★ 徹底修復：綁定 main_mode = "etf"，杜絕無反應與假亮色
+    if st.button("📊 ETF 專區", type="primary" if st.session_state.main_mode == "etf" else "secondary", use_container_width=True, key="m_nav_etf"):
+        st.session_state.main_mode = "etf"
         st.rerun()
 with r3_c2:
     if st.button("💎 體質雷達", type="primary" if st.session_state.main_mode == "market" else "secondary", use_container_width=True, key="m_nav_market"):
@@ -2227,7 +2228,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
     c3, c4 = st.columns(2)
     c3.metric("建議防守價 (停損)", f"{res['stop_loss']:.2f} {currency_sym}")
     
-    # ★ 核心防護 2：徹底杜絕 ZeroDivisionError（收盤價已安全保底，安全計算）
+    # 核心防護 2：徹底杜絕 ZeroDivisionError
     risk_pct = (risk_unit / close * 100.0) if close > 0 else 0.0
     c4.metric("最大預期風險", f"{risk_pct:.2f}%")
 
@@ -2311,7 +2312,6 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
             st.caption(f"📌 {an_data['rec_desc']}（共計 **{an_data['opinions']} 家** 機構追蹤）")
 
             a_c1, a_c2 = st.columns(2)
-            # ★ 零除防護：目標點位 upside 空間計算
             if an_data['target_mean'] > 0 and close > 0:
                 upside_pct = ((an_data['target_mean'] - close) / close) * 100.0
                 a_c1.metric("法人目標點位", f"{an_data['target_mean']:.1f} {currency_sym}", f"{upside_pct:+.1f}% 空間")
@@ -2433,7 +2433,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
 
         max_risk_dollar = total_capital * (risk_tolerance / 100.0)
 
-        # ★ 零除防護：購買力與部位限制安全除算
+        # 零除防護：購買力與部位限制安全除算
         if mode_type == "futures":
             loss_per_unit = risk_unit * spec['tick_value']
             risk_based_pos = int(max_risk_dollar // loss_per_unit) if loss_per_unit > 0 else 0
@@ -2912,7 +2912,6 @@ elif st.session_state.main_mode == "tw_futures":
                 fallback_note = f"📌 **行情資料來源提示**：外部資料庫未提供此期貨即時報價，走勢與均線位階參考加權指數標的；風控與下單已精確套用【{spec_info['name']}】契約規格（每點 {spec_info['tick_value']} 元、保證金 {spec_info['initial_margin']:,} 元）。"
 
             if df_target_fut is not None:
-                # ★ 完整閉合所有引數括號，杜絕 SyntaxError
                 r_fut = analyze_full_stock(
                     clean_key,
                     df_target_fut,
