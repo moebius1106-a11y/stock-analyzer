@@ -808,7 +808,7 @@ def render_intraday_chart_widget(ticker: str, title_name: str = ""):
     ).properties(height=65)
 
     combined_chart = alt.vconcat(top_chart, vol_bars).resolve_scale(x='shared').configure_view(strokeOpacity=0.15)
-    st.altair_chart(combined_chart, use_container_width=True)
+    st.altair_chart(combined_chart, width="stretch")
 
 # ----------------- 權威 API 2：臺灣銀行官方牌告匯率 -----------------
 @st.cache_data(ttl=300, show_spinner=False)
@@ -1406,11 +1406,12 @@ def backtest_strategy(df_stock, market_type="tw"):
     while i < n_bars - 6:
         if signals.iloc[i]:
             entry_p = safe_float(df_stock['Open'].iloc[i + 1])
-            if entry_p <= 0:
-                entry_p = safe_float(df_stock['Close'].iloc[i + 1])
             exit_p = safe_float(df_stock['Open'].iloc[i + 6])
-            if exit_p <= 0:
-                exit_p = safe_float(df_stock['Close'].iloc[i + 6])
+
+            # 嚴格無前視防護：開盤價異常時跳過樣本，不以 Close 代替
+            if entry_p <= 0 or exit_p <= 0:
+                i += 1
+                continue
 
             if entry_p > 0 and exit_p > 0:
                 net_ret = ((exit_p - entry_p) / entry_p - cost_rate) * 100.0
@@ -1863,7 +1864,7 @@ with st.expander("⚙️ 個人風控本金、看盤備忘錄與資料備份", e
         u_risk = st.number_input("單筆風險(%)", min_value=0.5, max_value=5.0, value=float(user_memory.get("risk_pct", 1.0)), step=0.1, key="prof_risk")
 
     u_note = st.text_area("📝 個人看盤備忘錄", value=user_memory.get("personal_note", ""), height=68, key="prof_note")
-    if st.button("💾 儲存本機偏好設定", use_container_width=True, key="btn_save_profile"):
+    if st.button("💾 儲存本機偏好設定", width="stretch", key="btn_save_profile"):
         user_memory["capital_tw"] = u_cap_tw
         user_memory["capital_us"] = u_cap_us
         user_memory["risk_pct"] = u_risk
@@ -1927,7 +1928,7 @@ st.link_button(
     "🌐 前往：台股技術量化與美股隔夜風險中心 (Vercel 外部系統)",
     url="https://stocks-two-omega.vercel.app/?openExternalBrowser=1",
     type="primary",
-    use_container_width=True,
+    width="stretch",
     help="點此開啟外部系統：包含十大指標計分卡、VIX 252日分位數、美股隔夜加權模板與回測中心"
 )
 
@@ -1943,7 +1944,7 @@ st.warning("""
 # 置頂大盤即時分時看盤室按鈕 + 盤中自動更新開關
 top_c1, top_c2 = st.columns([1.4, 1.0])
 with top_c1:
-    if st.button("📺 大盤即時看盤 (分時/戰情)", type="primary" if st.session_state.main_mode == "live_watch" else "secondary", use_container_width=True, key="m_nav_live_watch"):
+    if st.button("📺 大盤即時看盤 (分時/戰情)", type="primary" if st.session_state.get("main_mode", "live_watch") ==  "live_watch" else "secondary", width="stretch", key="m_nav_live_watch"):
         st.session_state.main_mode = "live_watch"
         st.rerun()
 with top_c2:
@@ -1952,42 +1953,42 @@ with top_c2:
 # 頂部八大模式切換 (手機端強制 2 欄並排)
 r1_c1, r1_c2 = st.columns(2)
 with r1_c1:
-    if st.button("🔍 台股診斷", type="primary" if st.session_state.main_mode == "tw_stock" else "secondary", use_container_width=True, key="m_nav_tw_stock"):
+    if st.button("🔍 台股診斷", type="primary" if st.session_state.get("main_mode", "live_watch") ==  "tw_stock" else "secondary", width="stretch", key="m_nav_tw_stock"):
         st.session_state.main_mode = "tw_stock"
         st.rerun()
 with r1_c2:
-    if st.button("🇺🇸 美股診斷", type="primary" if st.session_state.main_mode == "us_stock" else "secondary", use_container_width=True, key="m_nav_us_stock"):
+    if st.button("🇺🇸 美股診斷", type="primary" if st.session_state.get("main_mode", "live_watch") ==  "us_stock" else "secondary", width="stretch", key="m_nav_us_stock"):
         st.session_state.main_mode = "us_stock"
         st.rerun()
 
 r2_c1, r2_c2 = st.columns(2)
 with r2_c1:
-    if st.button("⚡ 台灣期貨", type="primary" if st.session_state.main_mode == "tw_futures" else "secondary", use_container_width=True, key="m_nav_tw_futures"):
+    if st.button("⚡ 台灣期貨", type="primary" if st.session_state.get("main_mode", "live_watch") ==  "tw_futures" else "secondary", width="stretch", key="m_nav_tw_futures"):
         st.session_state.main_mode = "tw_futures"
         st.rerun()
 with r2_c2:
-    if st.button("📈 美股期貨", type="primary" if st.session_state.main_mode == "us_futures" else "secondary", use_container_width=True, key="m_nav_us_futures"):
+    if st.button("📈 美股期貨", type="primary" if st.session_state.get("main_mode", "live_watch") ==  "us_futures" else "secondary", width="stretch", key="m_nav_us_futures"):
         st.session_state.main_mode = "us_futures"
         st.rerun()
 
 r3_c1, r3_c2 = st.columns(2)
 with r3_c1:
     # ★ 徹底修復：綁定 main_mode = "etf"，杜絕無反應與假亮色
-    if st.button("📊 ETF 專區", type="primary" if st.session_state.main_mode == "etf" else "secondary", use_container_width=True, key="m_nav_etf"):
+    if st.button("📊 ETF 專區", type="primary" if st.session_state.get("main_mode", "live_watch") ==  "etf" else "secondary", width="stretch", key="m_nav_etf"):
         st.session_state.main_mode = "etf"
         st.rerun()
 with r3_c2:
-    if st.button("💎 體質雷達", type="primary" if st.session_state.main_mode == "market" else "secondary", use_container_width=True, key="m_nav_market"):
+    if st.button("💎 體質雷達", type="primary" if st.session_state.get("main_mode", "live_watch") ==  "market" else "secondary", width="stretch", key="m_nav_market"):
         st.session_state.main_mode = "market"
         st.rerun()
 
 r4_c1, r4_c2 = st.columns(2)
 with r4_c1:
-    if st.button("📢 法說與戰情導入", type="primary" if st.session_state.main_mode == "events" else "secondary", use_container_width=True, key="m_nav_events"):
+    if st.button("📢 法說與戰情導入", type="primary" if st.session_state.get("main_mode", "live_watch") ==  "events" else "secondary", width="stretch", key="m_nav_events"):
         st.session_state.main_mode = "events"
         st.rerun()
 with r4_c2:
-    if st.button("💱 外匯大盤", type="primary" if st.session_state.main_mode == "forex" else "secondary", use_container_width=True, key="m_nav_forex"):
+    if st.button("💱 外匯大盤", type="primary" if st.session_state.get("main_mode", "live_watch") ==  "forex" else "secondary", width="stretch", key="m_nav_forex"):
         st.session_state.main_mode = "forex"
         st.rerun()
 
@@ -2103,7 +2104,7 @@ def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
 
             if earn["surprises"]:
                 st.markdown("##### 📋 近四季財報實際 EPS vs 法人預估驚奇度 (Earnings Surprise)")
-                st.dataframe(pd.DataFrame(earn["surprises"]), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(earn["surprises"]), width="stretch", hide_index=True)
             else:
                 st.info("💡 該標的目前無歷史季度 EPS Surprise 明細表，請參考上方營收與盈餘年增率指標。")
 
@@ -2170,7 +2171,7 @@ def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
                 data=report_md.encode("utf-8"),
                 file_name=f"Research_Report_{ticker_raw}_{datetime.now(TAIPEI_TZ).strftime('%Y%m%d')}.md",
                 mime="text/markdown",
-                use_container_width=True,
+                width="stretch",
                 key=f"dl_rep_{ticker_raw}_{mode_type}"
             )
 
@@ -2217,7 +2218,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         cur_favs = user_memory.get(f"{m_key}_favorites", [])
         is_fav = ticker_raw in cur_favs
         fav_label = "⭐ 已加入常用清單 (點此移出)" if is_fav else "☆ 收藏至常用清單"
-        if st.button(fav_label, use_container_width=True, key=f"btn_fav_toggle_{stable_key_suffix}"):
+        if st.button(fav_label, width="stretch", key=f"btn_fav_toggle_{stable_key_suffix}"):
             toggle_favorite_stock(m_key, ticker_raw)
             st.rerun()
 
@@ -2493,7 +2494,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         st.line_chart(chart_data)
 
 # ================= 模式 0：📺 大盤即時分時看盤室 =================
-if st.session_state.main_mode == "live_watch":
+if st.session_state.get("main_mode", "live_watch") == "live_watch":
     dash = fetch_twse_market_dashboard()
 
     if dash["twii_price"] <= 0 and df_market is not None and len(df_market) >= 2:
@@ -2509,7 +2510,7 @@ if st.session_state.main_mode == "live_watch":
     st.subheader("📺 台股加權指數・即時分時走勢與大盤統計看盤室")
     st.caption(f"資料時間：{dash['data_time']} ｜ 點選下方「🔄 立即刷新報價」或勾選上方「30秒自動刷新」可即時追蹤盤勢")
 
-    if st.button("🔄 立即刷新即時走勢與大盤統計", use_container_width=True, key="btn_refresh_live_watch"):
+    if st.button("🔄 立即刷新即時走勢與大盤統計", width="stretch", key="btn_refresh_live_watch"):
         fetch_twse_market_dashboard.clear()
         fetch_intraday_series.clear()
         fetch_live_macro_rss.clear()
@@ -2624,7 +2625,7 @@ if st.session_state.main_mode == "live_watch":
         st.caption("目前暫無即時外電快訊。")
 
 # ================= 模式 1：🔍 台股診斷 =================
-elif st.session_state.main_mode == "tw_stock":
+elif st.session_state.get("main_mode") == "tw_stock":
     st.subheader("🔍 台股全維度深度體檢")
 
     def set_and_jump_tw_ticker(target_code: str):
@@ -2643,7 +2644,7 @@ elif st.session_state.main_mode == "tw_stock":
     for idx, fav_code in enumerate(tw_favs[:6]):
         col_target = fav_cols[idx % 2]
         display_label = get_stock_display_label(fav_code, is_fav=True)
-        if col_target.button(display_label, use_container_width=True, key=f"tw_fav_{fav_code}"):
+        if col_target.button(display_label, width="stretch", key=f"tw_fav_{fav_code}"):
             set_and_jump_tw_ticker(fav_code)
             st.rerun()
 
@@ -2653,7 +2654,7 @@ elif st.session_state.main_mode == "tw_stock":
         with rh_c1:
             st.caption("🕒 **最近查詢紀錄**：")
         with rh_c2:
-            if st.button("🗑️ 清除", key="btn_clear_tw_rec", use_container_width=True, help="點此清空最近查詢歷史"):
+            if st.button("🗑️ 清除", key="btn_clear_tw_rec", width="stretch", help="點此清空最近查詢歷史"):
                 clear_recent_history("tw")
                 st.rerun()
 
@@ -2661,7 +2662,7 @@ elif st.session_state.main_mode == "tw_stock":
         for r_idx, r_code in enumerate(tw_recents):
             col_rec_target = rec_cols[r_idx % 2]
             rec_display = get_stock_display_label(r_code, is_fav=False)
-            if col_rec_target.button(rec_display, use_container_width=True, key=f"tw_rec_{r_code}"):
+            if col_rec_target.button(rec_display, width="stretch", key=f"tw_rec_{r_code}"):
                 set_and_jump_tw_ticker(r_code)
                 st.rerun()
 
@@ -2678,12 +2679,12 @@ elif st.session_state.main_mode == "tw_stock":
                 key="tw_ticker_field"
             )
         with col_btn:
-            exec_clicked = st.form_submit_button("🚀 診斷台股", type="primary", use_container_width=True)
+            exec_clicked = st.form_submit_button("🚀 診斷台股", type="primary", width="stretch")
 
     with st.expander("⚙️ 管理台股常用清單", expanded=False):
         col_m1, col_m2 = st.columns([2.4, 1.6])
         new_fav_in = col_m1.text_input("新增常用代碼", placeholder="例：2603.TW", key="new_tw_fav_in")
-        if col_m2.button("➕ 新增至常用", use_container_width=True, key="btn_add_tw_fav"):
+        if col_m2.button("➕ 新增至常用", width="stretch", key="btn_add_tw_fav"):
             clean_new_fav = new_fav_in.strip().upper()
             if clean_new_fav.isdigit():
                 clean_new_fav += ".TW"
@@ -2697,7 +2698,7 @@ elif st.session_state.main_mode == "tw_stock":
         del_cols = st.columns(2)
         for d_idx, d_code in enumerate(user_memory["tw_favorites"]):
             del_label = f"❌ {get_stock_display_label(d_code, is_fav=False)}"
-            if del_cols[d_idx % 2].button(del_label, key=f"del_tw_fav_{d_code}", use_container_width=True):
+            if del_cols[d_idx % 2].button(del_label, key=f"del_tw_fav_{d_code}", width="stretch"):
                 user_memory["tw_favorites"].remove(d_code)
                 save_user_data()
                 st.rerun()
@@ -2734,7 +2735,7 @@ elif st.session_state.main_mode == "tw_stock":
         render_analysis_view(r, df_stk, mode_type="tw", ticker_raw=cur_t)
 
 # ================= 模式 2：🇺🇸 美股診斷 =================
-elif st.session_state.main_mode == "us_stock":
+elif st.session_state.get("main_mode") == "us_stock":
     st.subheader("🇺🇸 美股全維度深度體檢")
 
     def set_and_jump_us_ticker(target_code: str):
@@ -2751,7 +2752,7 @@ elif st.session_state.main_mode == "us_stock":
     for idx, fav_u_code in enumerate(us_favs[:6]):
         col_u_target = fav_u_cols[idx % 2]
         display_u_label = get_stock_display_label(fav_u_code, is_fav=True)
-        if col_u_target.button(display_u_label, use_container_width=True, key=f"us_fav_{fav_u_code}"):
+        if col_u_target.button(display_u_label, width="stretch", key=f"us_fav_{fav_u_code}"):
             set_and_jump_us_ticker(fav_u_code)
             st.rerun()
 
@@ -2761,7 +2762,7 @@ elif st.session_state.main_mode == "us_stock":
         with urh_c1:
             st.caption("🕒 **最近查詢紀錄**：")
         with urh_c2:
-            if st.button("🗑️ 清除", key="btn_clear_us_rec", use_container_width=True, help="點此清空美股最近查詢歷史"):
+            if st.button("🗑️ 清除", key="btn_clear_us_rec", width="stretch", help="點此清空美股最近查詢歷史"):
                 clear_recent_history("us")
                 st.rerun()
 
@@ -2769,7 +2770,7 @@ elif st.session_state.main_mode == "us_stock":
         for ru_idx, ru_code in enumerate(us_recents):
             col_rec_u = rec_u_cols[ru_idx % 2]
             rec_u_label = get_stock_display_label(ru_code, is_fav=False)
-            if col_rec_u.button(rec_u_label, use_container_width=True, key=f"us_rec_{ru_code}"):
+            if col_rec_u.button(rec_u_label, width="stretch", key=f"us_rec_{ru_code}"):
                 set_and_jump_us_ticker(ru_code)
                 st.rerun()
 
@@ -2786,14 +2787,14 @@ elif st.session_state.main_mode == "us_stock":
                 key="us_ticker_field"
             )
         with col_u_btn:
-            exec_us_btn = st.form_submit_button("🚀 診斷美股", type="primary", use_container_width=True)
+            exec_us_btn = st.form_submit_button("🚀 診斷美股", type="primary", width="stretch")
 
     cleaned_us_ticker = raw_us_input.strip().upper()
 
     with st.expander("⚙️ 管理美股常用清單", expanded=False):
         col_mu1, col_mu2 = st.columns([2.4, 1.6])
         new_u_fav_in = col_mu1.text_input("新增美股代碼", placeholder="例：AMD", key="new_us_fav_in")
-        if col_mu2.button("➕ 新增至常用", use_container_width=True, key="btn_add_us_fav"):
+        if col_mu2.button("➕ 新增至常用", width="stretch", key="btn_add_us_fav"):
             clean_u_new = new_u_fav_in.strip().upper()
             if clean_u_new and clean_u_new not in user_memory["us_favorites"]:
                 user_memory["us_favorites"].append(clean_u_new)
@@ -2804,7 +2805,7 @@ elif st.session_state.main_mode == "us_stock":
         del_u_cols = st.columns(2)
         for du_idx, du_code in enumerate(user_memory["us_favorites"]):
             del_u_label = f"❌ {get_stock_display_label(du_code, is_fav=False)}"
-            if del_u_cols[du_idx % 2].button(del_u_label, key=f"del_us_fav_{du_code}", use_container_width=True):
+            if del_u_cols[du_idx % 2].button(del_u_label, key=f"del_us_fav_{du_code}", width="stretch"):
                 user_memory["us_favorites"].remove(du_code)
                 save_user_data()
                 st.rerun()
@@ -2837,7 +2838,7 @@ elif st.session_state.main_mode == "us_stock":
         render_analysis_view(r_us, df_stk_us, mode_type="us", ticker_raw=cur_ut)
 
 # ================= 模式 3：⚡ 台灣期貨 =================
-elif st.session_state.main_mode == "tw_futures":
+elif st.session_state.get("main_mode") == "tw_futures":
     st.subheader("⚡ 台灣期貨全維度專區 (優質契約・期顧共識・基差診斷)")
     st.caption("內建熱門台期契約池・自選查詢・多空目標壓力與保證金風控")
 
@@ -2850,17 +2851,17 @@ elif st.session_state.main_mode == "tw_futures":
 
     fq1, fq2 = st.columns(2)
     with fq1:
-        if st.button("台指期 (大台)", use_container_width=True, key="fq_wtx"):
+        if st.button("台指期 (大台)", width="stretch", key="fq_wtx"):
             set_and_jump_fut_contract("WTX")
             st.rerun()
-        if st.button("微型台指 (微台)", use_container_width=True, key="fq_wmt"):
+        if st.button("微型台指 (微台)", width="stretch", key="fq_wmt"):
             set_and_jump_fut_contract("WMT")
             st.rerun()
     with fq2:
-        if st.button("小型台指 (小台)", use_container_width=True, key="fq_mtx"):
+        if st.button("小型台指 (小台)", width="stretch", key="fq_mtx"):
             set_and_jump_fut_contract("MTX")
             st.rerun()
-        if st.button("電子期貨 (TE)", use_container_width=True, key="fq_te"):
+        if st.button("電子期貨 (TE)", width="stretch", key="fq_te"):
             set_and_jump_fut_contract("TE")
             st.rerun()
 
@@ -2877,7 +2878,7 @@ elif st.session_state.main_mode == "tw_futures":
                 key="tw_fut_field"
             )
         with col_f_btn:
-            exec_fut_btn = st.form_submit_button("🚀 診斷期貨", type="primary", use_container_width=True)
+            exec_fut_btn = st.form_submit_button("🚀 診斷期貨", type="primary", width="stretch")
 
     if df_market is not None and df_futures_bench is not None:
         twii_close = df_market.iloc[-1]['Close']
@@ -2908,8 +2909,12 @@ elif st.session_state.main_mode == "tw_futures":
             fallback_note = None
 
             if df_target_fut is None or df_target_fut.empty:
-                df_target_fut = df_market
-                fallback_note = f"📌 **行情資料來源提示**：外部資料庫未提供此期貨即時報價，走勢與均線位階參考加權指數標的；風控與下單已精確套用【{spec_info['name']}】契約規格（每點 {spec_info['tick_value']} 元、保證金 {spec_info['initial_margin']:,} 元）。"
+                st.session_state.analysis_cache_fut = None
+                st.error("❌ **期貨行情資料獲取失敗**：外部即時報價源未提供有效之台指期貨連續月報價。")
+                st.warning(f"🛡️ **系統防護已啟動**：為維護交易安全，嚴格禁止以加權現貨替代【{spec_info['name']}】進行期貨分析計算。")
+                if df_market is not None and not df_market.empty:
+                    st.markdown("#### 📌 【加權現貨大盤走勢 (僅供環境參考)】")
+                    st.line_chart(df_market['Close'].tail(60))
 
             if df_target_fut is not None:
                 r_fut = analyze_full_stock(
@@ -2933,7 +2938,7 @@ elif st.session_state.main_mode == "tw_futures":
         render_analysis_view(r_fut, df_fut_obj, mode_type="futures", custom_spec=spec_obj, fallback_warning=fb_msg, ticker_raw=fut_k)
 
 # ================= 模式 4：📈 美股期貨 =================
-elif st.session_state.main_mode == "us_futures":
+elif st.session_state.get("main_mode") == "us_futures":
     st.subheader("📈 美股期貨獨立專區")
     st.caption("四大美指期貨即時動能・微那斯達克 / 微標普 / 道瓊 / 羅素2000")
 
@@ -2960,29 +2965,29 @@ elif st.session_state.main_mode == "us_futures":
             st.write("---")
 
 # ================= 模式 5：📊 ETF 專區 =================
-elif st.session_state.main_mode == "etf":
+elif st.session_state.get("main_mode") == "etf":
     st.subheader("📊 ETF 旗艦量化策略雷達")
     f_r1_c1, f_r1_c2 = st.columns(2)
     with f_r1_c1:
-        if st.button("🔥 全部熱門", type="primary" if st.session_state.etf_category_filter == "全部" else "secondary", use_container_width=True, key="filter_etf_all"):
+        if st.button("🔥 全部熱門", type="primary" if st.session_state.etf_category_filter == "全部" else "secondary", width="stretch", key="filter_etf_all"):
             st.session_state.etf_category_filter = "全部"
             st.rerun()
     with f_r1_c2:
-        if st.button("📈 市值型", type="primary" if st.session_state.etf_category_filter == "市值型" else "secondary", use_container_width=True, key="filter_etf_cap"):
+        if st.button("📈 市值型", type="primary" if st.session_state.etf_category_filter == "市值型" else "secondary", width="stretch", key="filter_etf_cap"):
             st.session_state.etf_category_filter = "市值型"
             st.rerun()
 
     f_r2_c1, f_r2_c2 = st.columns(2)
     with f_r2_c1:
-        if st.button("💰 高股息", type="primary" if st.session_state.etf_category_filter == "高股息" else "secondary", use_container_width=True, key="filter_etf_div"):
+        if st.button("💰 高股息", type="primary" if st.session_state.etf_category_filter == "高股息" else "secondary", width="stretch", key="filter_etf_div"):
             st.session_state.etf_category_filter = "高股息"
             st.rerun()
     with f_r2_c2:
-        if st.button("🌐 海外/債券", type="primary" if st.session_state.etf_category_filter == "海外/債券" else "secondary", use_container_width=True, key="filter_etf_overseas"):
+        if st.button("🌐 海外/債券", type="primary" if st.session_state.etf_category_filter == "海外/債券" else "secondary", width="stretch", key="filter_etf_overseas"):
             st.session_state.etf_category_filter = "海外/債券"
             st.rerun()
 
-    if st.button("⚡ 開始全維度即時掃描排行", type="primary", use_container_width=True, key="etf_scan_exec_btn"):
+    if st.button("⚡ 開始全維度即時掃描排行", type="primary", width="stretch", key="etf_scan_exec_btn"):
         if st.session_state.etf_category_filter == "市值型":
             target_etfs = [item for item in ETF_UNIVERSE if item[2] == "市值型"]
         elif st.session_state.etf_category_filter == "高股息":
@@ -3082,10 +3087,10 @@ elif st.session_state.main_mode == "etf":
             st.info(f"🎯 維持標準扣款 **{int(etf_cap):,} 元**")
 
 # ================= 模式 6：💎 體質雷達 =================
-elif st.session_state.main_mode == "market":
+elif st.session_state.get("main_mode") == "market":
     st.subheader("💎 市場穩健優質標的・即時連線掃描")
 
-    if st.button("⚡ 開始全市場即時連線篩選", type="primary", use_container_width=True, key="market_scan_exec_btn"):
+    if st.button("⚡ 開始全市場即時連線篩選", type="primary", width="stretch", key="market_scan_exec_btn"):
         progress_bar = st.progress(0)
         status_text = st.empty()
         scan_results = []
@@ -3164,7 +3169,7 @@ elif st.session_state.main_mode == "market":
                     st.write(f"• {err}")
 
 # ================= 模式 7：📢 戰情訊息導入 ＆ 法說會與即時外電 =================
-elif st.session_state.main_mode == "events":
+elif st.session_state.get("main_mode") == "events":
     st.subheader("📢 關鍵市場戰情導入 ＆ 即時外電／法說會速查")
 
     with st.expander("✍️ 【導入／更新置頂關鍵市場戰情分析訊息】", expanded=True):
@@ -3175,12 +3180,12 @@ elif st.session_state.main_mode == "events":
 
         b_btn1, b_btn2 = st.columns(2)
         with b_btn1:
-            if st.button("🚀 發布並更新置頂戰情", type="primary", use_container_width=True, key="btn_pub_brief"):
+            if st.button("🚀 發布並更新置頂戰情", type="primary", width="stretch", key="btn_pub_brief"):
                 save_market_briefing(b_title_in, b_content_in, b_author_in)
                 st.success("已成功更新全站置頂戰情焦點！")
                 st.rerun()
         with b_btn2:
-            if st.button("🤖 結合即時指標自動生成草稿", use_container_width=True, key="btn_auto_synth_brief"):
+            if st.button("🤖 結合即時指標自動生成草稿", width="stretch", key="btn_auto_synth_brief"):
                 tw_p = df_market.iloc[-1]['Close'] if df_market is not None else 0
                 tw_ma20 = df_market['MA20'].iloc[-1] if df_market is not None else 0
                 sox_chg = ((df_sox['Close'].iloc[-1] - df_sox['Close'].iloc[-2]) / df_sox['Close'].iloc[-2] * 100) if (df_sox is not None and len(df_sox) >= 2) else 0
@@ -3200,10 +3205,10 @@ elif st.session_state.main_mode == "events":
     st.markdown("### 🌐 總經與市場焦點外電即時導入 (Google News RSS)")
     rss_q1, rss_q2 = st.columns(2)
     with rss_q1:
-        if st.button("🔥 台股 / 費半 / 台積電", use_container_width=True, key="rss_btn_tw"):
+        if st.button("🔥 台股 / 費半 / 台積電", width="stretch", key="rss_btn_tw"):
             st.session_state.rss_query = "台股 OR 費半 OR 台積電"
     with rss_q2:
-        if st.button("🇺🇸 美國 CPI / 聯準會 / 美股", use_container_width=True, key="rss_btn_us"):
+        if st.button("🇺🇸 美國 CPI / 聯準會 / 美股", width="stretch", key="rss_btn_us"):
             st.session_state.rss_query = "美國 CPI OR 聯準會 OR 那斯達克"
 
     cur_rss_q = st.session_state.get("rss_query", "台股 OR 美國 CPI OR 費半 OR 台積電")
@@ -3214,7 +3219,7 @@ elif st.session_state.main_mode == "events":
                 st.markdown(f"**[{r_it['title']}]({r_it['link']})**")
                 c_r1, c_r2 = st.columns([2.5, 1.5])
                 c_r1.caption(f"來源：{r_it['source']} ｜ {r_it['pub_date']}")
-                if c_r2.button("📌 導入為置頂戰情", key=f"pin_rss_{idx_r}", use_container_width=True):
+                if c_r2.button("📌 導入為置頂戰情", key=f"pin_rss_{idx_r}", width="stretch"):
                     save_market_briefing(
                         f"🔥 市場快訊導入：{r_it['title'][:28]}...",
                         f"【外電焦點】{r_it['title']}（來源：{r_it['source']}）\n\n請密切留意該事件對台指期夜盤、美股科技股與次日開盤跳空幅度之連動影響。",
@@ -3228,7 +3233,7 @@ elif st.session_state.main_mode == "events":
     with col_n_input:
         news_ticker = st.text_input("輸入查詢標的代碼", value="2330.TW", label_visibility="collapsed", key="news_search_input")
     with col_n_btn:
-        news_clicked = st.button("📰 查個股新聞", type="primary", use_container_width=True, key="fetch_news_btn")
+        news_clicked = st.button("📰 查個股新聞", type="primary", width="stretch", key="fetch_news_btn")
 
     if news_clicked:
         clean_news_t = news_ticker.strip().upper()
@@ -3256,7 +3261,7 @@ elif st.session_state.main_mode == "events":
             st.write("---")
 
 # ================= 模式 8：💱 全球外匯大盤 =================
-elif st.session_state.main_mode == "forex":
+elif st.session_state.get("main_mode") == "forex":
     st.subheader("💱 全球外匯與熱錢資金即時儀表板")
     st.caption("直連臺灣銀行官方牌告與全球匯率主機")
 
