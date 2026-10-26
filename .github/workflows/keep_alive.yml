@@ -1,0 +1,16 @@
+name: Keep Streamlit App Alive
+
+on:
+  schedule:
+    # 每 4 小時自動造訪一次 (UTC 時間 0, 4, 8, 12, 16, 20 點)
+    - cron: '0 */4 * * *'
+  workflow_dispatch: # 支援在 GitHub 介面手動立即測試執行
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit App
+        run: |
+          curl -s -L "https://stock-analyzer-iapxysxpvkk5veomzu4vcu.streamlit.app/" > /dev/null
+          echo "Ping successful at $(date)"
