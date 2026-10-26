@@ -1898,6 +1898,55 @@ def fetch_stock_news(ticker: str):
     except Exception:
         return []
 
+
+MARKET_QUALITY_UNIVERSE = [
+    ("台積電", "2330.TW", "半導體先進製程龍頭"),
+    ("聯發科", "2454.TW", "IC設計領航者"),
+    ("鴻海", "2317.TW", "全球電子代工/AI伺服器"),
+    ("廣達", "2382.TW", "AI伺服器領導大廠"),
+    ("緯穎", "6669.TW", "雲端資料中心伺服器"),
+    ("台達電", "2308.TW", "電源管理與綠能永續"),
+    ("富邦金", "2881.TW", "金控獲利龍頭"),
+    ("國泰金", "2882.TW", "全方位金控旗艦"),
+    ("中信金", "2891.TW", "消費金融與財富管理龍頭"),
+    ("兆豐金", "2886.TW", "官股外匯獲利模範生"),
+    ("長榮", "2603.TW", "全球貨櫃航運龍頭"),
+    ("奇鋐", "3017.TW", "散熱模組領導大廠"),
+    ("雙鴻", "3324.TW", "水冷散熱關鍵大廠"),
+    ("大立光", "3008.TW", "光學鏡頭專利領先者"),
+    ("元大台灣50", "0050.TW", "台股核心藍籌組合")
+]
+
+ETF_UNIVERSE = [
+    ("元大台灣50", "0050.TW", "市值型", "台股市值前50大權值龍頭"),
+    ("富邦台50", "006208.TW", "市值型", "低經理費追蹤台股前50大龍頭"),
+    ("元大高股息", "0056.TW", "高股息", "預測未來高現金殖利率"),
+    ("國泰永續高股息", "00878.TW", "高股息", "ESG+過去3年平均高殖利率/季配"),
+    ("群益台灣精選高息", "00919.TW", "高股息", "宣告股利精準篩選/高配息率"),
+    ("復華台灣科技優息", "00929.TW", "高股息", "全科技股高股息/月配息代表"),
+    ("元大台灣價值高息", "00940.TW", "高股息", "巴菲特價值投資/自由現金流"),
+    ("統一FANG+", "00757.TW", "海外科技", "美國科技巨頭/高成長高動能"),
+    ("國泰費城半導體", "00830.TW", "海外半導體", "全球半導體硬體/AI上游核心"),
+    ("富邦NASDAQ", "00662.TW", "海外美股", "追蹤美國那斯達克100科技成長"),
+    ("元大美債20年", "00679B.TWO", "債券避險", "長天期美債/降息受惠"),
+    ("國泰20年美債", "00687B.TWO", "債券避險", "長天期美債/穩定債息")
+]
+
+EARNINGS_CALLS = [
+    {"公司": "台積電 (2330)", "重要性": "⭐⭐⭐⭐⭐", "期間": "每季第 1 個月中旬 (1/4/7/10月)", "重點觀測": "資本支出、CoWoS產能、AI半導體展望、N2量產節奏"},
+    {"公司": "聯發科 (2454)", "重要性": "⭐⭐⭐⭐", "期間": "每季底至次月首週 (1/4/7/10月)", "重點觀測": "天璣旗艦晶片出貨、車用與邊緣AI ASIC設計案營收佔比"},
+    {"公司": "鴻海 (2317)", "重要性": "⭐⭐⭐⭐", "期間": "每季中旬 (3/5/8/11月)", "重點觀測": "GB200/NVL72 伺服器量產交期、電動車與毛利率"},
+    {"公司": "廣達 (2382)", "重要性": "⭐⭐⭐⭐", "期間": "每季中旬 (3/5/8/11月)", "重點觀測": "AI伺服器機櫃出貨比重、車用電子獲利動能"},
+    {"公司": "富邦金 (2881)", "重要性": "⭐⭐⭐", "期間": "每季下旬 (3/5/8/11月)", "重點觀測": "海外債券投資評價、壽險避險成本與股利配發能力"}
+]
+
+US_FUT_LIST = [
+    ("微那斯達克期 (NQ)", "NQ=F", "全球科技龍頭風向球"),
+    ("小標普500期 (ES)", "ES=F", "美股大盤流動性與宏觀資產"),
+    ("道瓊期貨 (YM)", "YM=F", "傳統價值龍頭與金融防禦"),
+    ("羅素2000期 (RTY)", "RTY=F", "中小型股景氣復甦動能")
+]
+
 # ================= 四大權威機構研究報告渲染器 =================
 def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
     suite = res.get("inst_suite", {})
@@ -2218,33 +2267,53 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
                 """, unsafe_allow_html=True)
 
             if cdp_info:
-                st.markdown("##### 📏 今日 CDP 逆勢五大關鍵價（依前一交易日日K計算）")
-                c_cdp1, c_cdp2, c_cdp3, c_cdp4, c_cdp5 = st.columns(5)
-                c_cdp1.metric("最高阻力 (AH)", f"{cdp_info['AH']:.2f}", help="極限追高超買警戒區")
-                c_cdp2.metric("次高阻力 (NH)", f"{cdp_info['NH']:.2f}", help="多單第一階段停利目標")
-                c_cdp3.metric("多空平衡 (CDP)", f"{cdp_info['CDP']:.2f}", help="今日強弱分水嶺軸心")
-                c_cdp4.metric("次低支撐 (NL)", f"{cdp_info['NL']:.2f}", help="拉回短線承接點")
-                c_cdp5.metric("最低支撐 (AL)", f"{cdp_info['AL']:.2f}", help="超跌極限防守區")
+                st.markdown("##### 📏 今日 CDP 逆勢五大關鍵價（Price Ladder 階梯看板）")
+                st.markdown(f"""
+                <div style="background: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 10px; padding: 0.6rem 0.8rem; margin-bottom: 0.6rem; font-size: 0.92rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding: 0.25rem 0; border-bottom: 1px dashed rgba(128,128,128,0.2);">
+                        <span>🚨 <b>最高阻力 (AH)</b> <span style="font-size:0.78rem; color:#888;">極限超買警戒</span></span>
+                        <b class="tw-up" style="font-size:1.05rem;">{cdp_info['AH']:,.2f}</b>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding: 0.25rem 0; border-bottom: 1px dashed rgba(128,128,128,0.2);">
+                        <span>🎯 <b>次高阻力 (NH)</b> <span style="font-size:0.78rem; color:#888;">第一停利目標</span></span>
+                        <b class="tw-up" style="font-size:1.05rem;">{cdp_info['NH']:,.2f}</b>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding: 0.35rem 0; background: rgba(26,115,232,0.08); border-radius: 6px; margin: 0.2rem 0; padding-left: 0.4rem; padding-right: 0.4rem;">
+                        <span>⚖️ <b>多空平衡 (CDP)</b> <span style="font-size:0.78rem; color:#1a73e8;">強弱分水嶺軸心</span></span>
+                        <b style="font-size:1.15rem; color:#1a73e8;">{cdp_info['CDP']:,.2f}</b>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding: 0.25rem 0; border-bottom: 1px dashed rgba(128,128,128,0.2);">
+                        <span>🛡️ <b>次低支撐 (NL)</b> <span style="font-size:0.78rem; color:#888;">短線拉回承接</span></span>
+                        <b class="tw-down" style="font-size:1.05rem;">{cdp_info['NL']:,.2f}</b>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding: 0.25rem 0;">
+                        <span>❄️ <b>最低支撐 (AL)</b> <span style="font-size:0.78rem; color:#888;">超跌極限防守</span></span>
+                        <b class="tw-down" style="font-size:1.05rem;">{cdp_info['AL']:,.2f}</b>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
             st.markdown("##### 🧮 現股當沖損益與保本跳動檔位計算機")
-            calc_c1, calc_c2, calc_c3 = st.columns(3)
+            calc_c1, calc_c2 = st.columns(2)
             with calc_c1:
-                dt_shares_lot = st.number_input("當沖進場張數 (Lots)", min_value=1, max_value=500, value=1, step=1, key=f"dt_lots_{stable_key_suffix}")
+                dt_shares_lot = st.number_input("當沖張數 (Lots)", min_value=1, max_value=500, value=1, step=1, key=f"dt_lots_{stable_key_suffix}")
             with calc_c2:
                 saved_disc = float(user_memory.get("daytrade_fee_discount", 0.28))
-                dt_discount = st.number_input("券商手續費折讓係數", min_value=0.10, max_value=1.00, value=saved_disc, step=0.01, key=f"dt_disc_{stable_key_suffix}")
-            with calc_c3:
-                needed_ticks, tick_sz, cost_1lot, profit_1tick = calc_daytrade_breakeven(close, dt_discount)
-                st.metric("每檔跳動金額", f"{tick_sz:.2f} 元/股", f"跳動 1 檔 = {int(profit_1tick * dt_shares_lot):,} 元")
+                dt_discount = st.number_input("手續費折讓係數", min_value=0.10, max_value=1.00, value=saved_disc, step=0.01, key=f"dt_disc_{stable_key_suffix}")
 
+            needed_ticks, tick_sz, cost_1lot, profit_1tick = calc_daytrade_breakeven(close, dt_discount)
             total_cost_lots = cost_1lot * dt_shares_lot
             total_1tick_profit = profit_1tick * dt_shares_lot
             net_profit_1tick = total_1tick_profit - total_cost_lots
 
-            dc_m1, dc_m2, dc_m3 = st.columns(3)
-            dc_m1.metric("損益平衡需跳動", f"{needed_ticks} 檔 (Ticks)", f"跳 {needed_ticks} 檔即可打平保本")
-            dc_m2.metric("買賣總稅費成本", f"{int(total_cost_lots):,} 元", help="已自動包含 0.15% 減半證交稅 + 券商折讓手續費")
-            dc_m3.metric("跳 1 檔淨盈虧", f"{int(net_profit_1tick):,} 元", "扣除稅費後實質獲利" if net_profit_1tick > 0 else "跳 1 檔尚不足以打平稅費")
+            grid_r1_c1, grid_r1_c2 = st.columns(2)
+            grid_r1_c1.metric("每檔跳動金額", f"{tick_sz:.2f} 元", f"1檔={int(total_1tick_profit):,}元")
+            grid_r1_c2.metric("損益兩平需跳動", f"{needed_ticks} 檔", f"跳 {needed_ticks} 檔即保本")
+
+            grid_r2_c1, grid_r2_c2 = st.columns(2)
+            grid_r2_c1.metric("買賣總稅費成本", f"{int(total_cost_lots):,} 元", help="已含 0.15% 減半證交稅與折讓手續費")
+            net_sign = "+" if net_profit_1tick > 0 else ""
+            grid_r2_c2.metric("跳 1 檔淨盈虧", f"{net_sign}{int(net_profit_1tick):,} 元", "實質獲利" if net_profit_1tick > 0 else "未打平稅費")
 
             st.caption(f"📌 **實戰提醒**：目前股價為 `{close:.2f}` 元，跳動單位為 `{tick_sz:.2f}` 元。當沖進場後只要朝方向跳動 **{needed_ticks} 檔** 即保本，後續每多跳動 1 檔可實收 **{int(total_1tick_profit):,} 元**。")
 
