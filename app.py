@@ -785,7 +785,7 @@ def fetch_intraday_series(ticker: str):
         tp = (df_plot['High'] + df_plot['Low'] + df_plot['Close']) / 3.0
         cum_tp_vol = (tp * df_plot['Volume']).cumsum()
         cum_vol = df_plot['Volume'].cumsum()
-        df_plot['VWAP'] = np.where(cum_vol > 0, cum_tp_vol / cum_vol, df_plot['Close'])
+        df_plot['VWAP'] = np.where(cum_vol > 0, cum_tp_vol / (cum_vol + 1e-9), df_plot['Close'])
 
         return df_plot.reset_index(drop=True), y_close
     except Exception:
@@ -1146,803 +1146,581 @@ def fetch_institutional_research_suite(ticker: str):
     except Exception:
         return {"has_suite": False}
 
-def format_large_money(val, currency="NTD"):
-    if val is None or val == 0:
-        return "未揭露"
-    abs_v = abs(val)
-    sign = "-" if val < 0 else ""
-    if currency == "USD":
-        if abs_v >= 1e12:
-            return f"{sign}${abs_v/1e12:.2f} 兆 (T)"
-        if abs_v >= 1e9:
-            return f"{sign}${abs_v/1e9:.2f} 十億 (B)"
-        if abs_v >= 1e6:
-            return f"{sign}${abs_v/1e6:.2f} 百萬 (M)"
-        return f"{sign}${abs_v:,.0f}"
-    else:
-        if abs_v >= 1e12:
-            return f"{sign}{abs_v/1e12:.2f} 兆元"
-        if abs_v >= 1e8:
-            return f"{sign}{abs_v/1e8:.2f} 億元"
-        if abs_v >= 1e4:
-            return f"{sign}{abs_v/1e4:.1f} 萬元"
-        return f"{sign}{abs_v:,.0f} 元"
-
-def fetch_futures_analyst_consensus(code: str, df_fut: pd.DataFrame, df_mkt: pd.DataFrame):
-    if df_fut is None or df_fut.empty:
-        return {
-            "has_data": False,
-            "rec_label": "⚪ 資料不足",
-            "rec_desc": "期貨行情資料不足",
-            "target_mean": 0.0,
-            "target_high": 0.0,
-            "target_low": 0.0,
-            "opinions": 0
-        }
-
-    last_fut = df_fut.iloc[-1]['Close']
-    ma5 = df_fut['MA5'].iloc[-1]
-    ma20 = df_fut['MA20'].iloc[-1]
-    ma60 = df_fut['MA60'].iloc[-1]
-
-    basis = 0.0
-    if df_mkt is not None and not df_mkt.empty:
-        basis = last_fut - df_mkt.iloc[-1]['Close']
-
-    if last_fut > ma5 > ma20 and basis > 20:
-        rec_label = "🔥 強力多頭控盤 (Strong Bull)"
-        rec_desc = "期顧與大額法人共識偏多，實質正價差領先推進，多方攻勢凌厲"
-    elif last_fut > ma20:
-        rec_label = "🟢 偏多震盪格局 (Bullish Hold)"
-        rec_desc = "守穩月線關鍵生命線，均線架構偏多，逢拉回支撐有強力承接買盤"
-    elif last_fut < ma20 < ma60 and basis < -40:
-        rec_label = "🔴 空方壓制防守 (Bearish)"
-        rec_desc = "期貨逆價差擴大，均線蓋頭下壓，大額避險空單主導盤勢"
-    else:
-        rec_label = "🟡 區間箱型拉鋸 (Neutral)"
-        rec_desc = "多空籌碼膠著，均線糾結，短線預期於整數關卡進行區間震盪整理"
-
-    atr = df_fut['ATR14'].iloc[-1] if 'ATR14' in df_fut.columns else 150.0
-    recent_high = df_fut['High'].tail(20).max()
-    recent_low = df_fut['Low'].tail(20).min()
-
-    target_high = max(recent_high, last_fut + 2.0 * atr)
-    target_low = min(recent_low, last_fut - 2.0 * atr)
-    target_mean = (last_fut + target_high) / 2.0 if last_fut > ma20 else last_fut
-
-    return {
-        "has_data": True,
-        "rec_label": rec_label,
-        "rec_desc": rec_desc,
-        "target_mean": target_mean,
-        "target_high": target_high,
-        "target_low": target_low,
-        "opinions": 8
-    }
-
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_and_calc(ticker: str, period: str = "1y"):
-    try:
-        obj = yf.Ticker(ticker)
-        df = obj.history(period=period)
-        if df.empty or len(df) < 15:
-            return None
-
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-
-        if (".TW" in ticker.upper() or ".TWO" in ticker.upper()) and not ticker.endswith("=F"):
-            twse_live = fetch_twse_realtime(ticker)
-            if twse_live and twse_live["match_price"] > 0:
-                now_taipei = datetime.now(TAIPEI_TZ)
-                today_str = now_taipei.strftime("%Y%m%d")
-
-                if twse_live.get("date_str") == today_str and twse_live.get("is_trading"):
-                    last_idx = df.index[-1]
-                    last_date = last_idx.date()
-                    today_date = now_taipei.date()
-
-                    if last_date < today_date:
-                        new_ts = pd.Timestamp.now(tz=last_idx.tz if last_idx.tzinfo else TAIPEI_TZ)
-                        new_row = pd.DataFrame([{
-                            'Open': twse_live['open'],
-                            'High': twse_live['high'],
-                            'Low': twse_live['low'],
-                            'Close': twse_live['match_price'],
-                            'Volume': twse_live['volume']
-                        }], index=[new_ts])
-                        df = pd.concat([df, new_row])
-                    else:
-                        df.iloc[-1, df.columns.get_loc('Close')] = twse_live["match_price"]
-                        if twse_live["open"] > 0 and df.iloc[-1]['Open'] <= 0:
-                            df.iloc[-1, df.columns.get_loc('Open')] = twse_live["open"]
-                        df.iloc[-1, df.columns.get_loc('High')] = max(df.iloc[-1]['High'], twse_live["high"])
-                        df.iloc[-1, df.columns.get_loc('Low')] = min(df.iloc[-1]['Low'], twse_live["low"]) if twse_live["low"] > 0 else df.iloc[-1]['Low']
-                        if twse_live["volume"] > 0:
-                            df.iloc[-1, df.columns.get_loc('Volume')] = twse_live["volume"]
-
-        df = df[df['Close'] > 0].copy()
-        if df.empty or len(df) < 5:
-            return None
-
-        df['MA5'] = df['Close'].rolling(5, min_periods=1).mean()
-        df['MA20'] = df['Close'].rolling(20, min_periods=5).mean()
-        df['MA60'] = df['Close'].rolling(60, min_periods=20).mean()
-        df['Vol_MA5'] = df['Volume'].rolling(5, min_periods=1).mean()
-
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14, min_periods=1).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14, min_periods=1).mean()
-        total_move = gain + loss
-        rs = gain / (loss + 1e-9)
-        df['RSI14'] = np.where(total_move < 1e-6, 50.0, 100.0 - (100.0 / (1.0 + rs)))
-
-        ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-        ema26 = df['Close'].ewm(span=26, adjust=False).mean()
-        df['DIF'] = ema12 - ema26
-        df['MACD'] = df['DIF'].ewm(span=9, adjust=False).mean()
-        df['OSC'] = df['DIF'] - df['MACD']
-
-        hl = df['High'] - df['Low']
-        hc = (df['High'] - df['Close'].shift()).abs()
-        lc = (df['Low'] - df['Close'].shift()).abs()
-        tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-        df['ATR14'] = tr.rolling(14, min_periods=1).mean().bfill()
-
-        return df.copy()
-    except Exception:
-        return None
-
-@st.cache_data(ttl=7200, show_spinner=False)
-def fetch_fundamentals(ticker: str):
-    clean_code, market = normalize_ticker(ticker)
-    if market == "futures":
-        return {"has_data": False, "is_etf": False, "score": None, "reasons": []}
-
-    try:
-        info = fetch_yf_shared_info(ticker)
-        is_etf = info.get('quoteType') == 'ETF' or clean_code.startswith(('00', '01'))
-
-        if is_etf:
-            yield_raw = info.get('yield', info.get('dividendYield', None))
-            beta_raw = info.get('beta', None)
-            nav_raw = info.get('navPrice', None)
-
-            yield_val = safe_float(yield_raw * 100 if yield_raw is not None else None, default=None)
-            beta_val = safe_float(beta_raw, default=None)
-            nav_val = safe_float(nav_raw, default=None)
-
-            if yield_val is None and beta_val is None:
-                return {
-                    "has_data": False,
-                    "is_etf": True,
-                    "score": None,
-                    "yield": None,
-                    "beta": None,
-                    "nav": nav_val,
-                    "category": info.get('category', '指數股票型基金 (ETF)'),
-                    "reasons": ["⚠️ 查無足夠之配息率與 Beta 數據，未計入基本面評分"]
-                }
-
-            fund_score = 0
-            reasons = []
-
-            if yield_val is not None:
-                if yield_val >= 7.0:
-                    fund_score += 25
-                    reasons.append(f"預估年化殖利率 {yield_val:.1f}%，高息防禦優勢顯著")
-                elif yield_val >= 4.5:
-                    fund_score += 20
-                    reasons.append(f"預估年化殖利率 {yield_val:.1f}%，配息收益穩定")
-                else:
-                    fund_score += 15
-                    reasons.append(f"年化殖利率 {yield_val:.1f}%，屬成長/海外型 ETF")
-
-            if beta_val is not None:
-                if beta_val <= 0.8:
-                    fund_score += 15
-                    reasons.append(f"Beta 係數 {beta_val:.2f}，抗跌防禦性佳")
-                elif beta_val <= 1.2:
-                    fund_score += 12
-                    reasons.append(f"Beta 係數 {beta_val:.2f}，走勢貼近大盤指數")
-                else:
-                    fund_score += 8
-                    reasons.append(f"Beta 係數 {beta_val:.2f}，波動幅度相對較大")
-
-            fund_score += 10
-            reasons.append("成分股已實施一籃子分散風險")
-
-            return {
-                "has_data": True,
-                "is_etf": True,
-                "score": fund_score,
-                "yield": yield_val,
-                "beta": beta_val,
-                "nav": nav_val,
-                "category": info.get('category', '指數股票型基金 (ETF)'),
-                "reasons": reasons
-            }
-        else:
-            roe_raw = info.get('returnOnEquity', None)
-            op_raw = info.get('operatingMargins', None)
-            pe_raw = info.get('trailingPE', None)
-            de_raw = info.get('debtToEquity', None)
-
-            if roe_raw is None and op_raw is None and pe_raw is None and de_raw is None:
-                return {
-                    "has_data": False,
-                    "is_etf": False,
-                    "score": None,
-                    "roe": None,
-                    "op_margin": None,
-                    "pe": None,
-                    "debt_ratio": None,
-                    "reasons": ["⚠️ 查無足夠之財報數據，未計入基本面評分"]
-                }
-
-            roe_val = safe_float(roe_raw * 100 if roe_raw is not None else None, default=None)
-            op_margin_val = safe_float(op_raw * 100 if op_raw is not None else None, default=None)
-            pe_val = safe_float(pe_raw, default=None)
-            de_val = safe_float(de_raw, default=None)
-
-            fund_score = 0
-            reasons = []
-
-            if roe_val is not None:
-                if roe_val >= 15:
-                    fund_score += 15
-                    reasons.append(f"ROE 達 {roe_val:.1f}%，資本回報效率極佳")
-                elif roe_val >= 10:
-                    fund_score += 10
-                    reasons.append(f"ROE 達 {roe_val:.1f}%，維持穩健水準")
-                else:
-                    reasons.append(f"ROE 偏低 ({roe_val:.1f}%)")
-
-            if op_margin_val is not None:
-                if op_margin_val >= 15:
-                    fund_score += 15
-                    reasons.append(f"營業利益率 {op_margin_val:.1f}%，本業競爭優勢顯著")
-                elif op_margin_val >= 8:
-                    fund_score += 10
-                    reasons.append(f"營業利益率 {op_margin_val:.1f}%，本業獲利扎實")
-                else:
-                    reasons.append(f"營業利益率偏低 ({op_margin_val:.1f}%)")
-
-            if pe_val is not None:
-                if pe_val <= 0:
-                    reasons.append("本益比不適用（近四季處於虧損狀態）")
-                elif 8 <= pe_val <= 25:
-                    fund_score += 10
-                    reasons.append(f"本益比 {pe_val:.1f}x，估值處合理區間")
-                elif 0 < pe_val < 8:
-                    fund_score += 7
-                    reasons.append(f"本益比低估 ({pe_val:.1f}x)")
-                else:
-                    fund_score += 4
-                    reasons.append(f"本益比偏高 ({pe_val:.1f}x)")
-
-            if de_val is not None:
-                if de_val <= 80:
-                    fund_score += 10
-                    reasons.append(f"負債比率健康 ({de_val:.1f}%)，財務防禦佳")
-                elif de_val <= 150:
-                    fund_score += 6
-                    reasons.append(f"負債比率適中 ({de_val:.1f}%)")
-                else:
-                    reasons.append(f"負債比率偏高 ({de_val:.1f}%)")
-
-            return {
-                "has_data": True,
-                "is_etf": False,
-                "score": fund_score,
-                "roe": roe_val,
-                "op_margin": op_margin_val,
-                "pe": pe_val,
-                "debt_ratio": de_val,
-                "reasons": reasons
-            }
-    except Exception:
-        return {
-            "has_data": False,
-            "is_etf": False,
-            "score": None,
-            "roe": None,
-            "op_margin": None,
-            "pe": None,
-            "debt_ratio": None,
-            "reasons": ["⚠️ 基本面連線逾時，未計入基本面評分"]
-        }
-
-def analyze_opening_and_ma(df_stock, live_info=None):
-    if df_stock is None or len(df_stock) == 0:
-        return {}, "資料不足", 0, 0.0, 0.0, "⚪ 無資料", ["資料不足"]
-
-    last = df_stock.iloc[-1]
-    prev = df_stock.iloc[-2] if len(df_stock) >= 2 else last
-    close = safe_float(last['Close'])
-    ma5 = safe_float(last['MA5'], close)
-    ma20 = safe_float(last['MA20'], close)
-    ma60 = safe_float(last['MA60'], close)
-
-    ma_status = {
-        "ma5_diff": ((close - ma5) / (ma5 + 1e-9)) * 100,
-        "ma20_diff": ((close - ma20) / (ma20 + 1e-9)) * 100,
-        "ma60_diff": ((close - ma60) / (ma60 + 1e-9)) * 100,
-        "ma5_val": ma5,
-        "ma20_val": ma20,
-        "ma60_val": ma60
-    }
-
-    if close > ma5 > ma20 > ma60:
-        ma_alignment = "🔥 完美多頭排列 (價格 > 日線 > 月線 > 季線)"
-        ma_score = 25
-    elif close > ma20 and ma20 > ma60:
-        ma_alignment = "📈 中長線偏多架構 (守穩月線與季線)"
-        ma_score = 18
-    elif close < ma5 < ma20 < ma60:
-        ma_alignment = "❄️ 完全空頭排列 (價格被所有均線下壓)"
-        ma_score = 0
-    else:
-        ma_alignment = "🔄 均線震盪糾結 (多空方向待表態)"
-        ma_score = 10
-
-    open_p = safe_float(last['Open'], close)
-    prev_close = safe_float(prev['Close'], close)
-    gap_pct = ((open_p - prev_close) / (prev_close + 1e-9)) * 100
-    intraday_pct = ((close - open_p) / (open_p + 1e-9)) * 100
-
-    opening_diag = []
-    if gap_pct >= 1.0:
-        opening_diag.append(f"強勢跳空開高 (+{gap_pct:.2f}%)，多方意圖明確。")
-    elif gap_pct <= -1.0:
-        opening_diag.append(f"弱勢跳空開低 ({gap_pct:.2f}%)，下檔承接力道待觀察。")
-    else:
-        opening_diag.append(f"平盤附近開出 ({gap_pct:+.2f}%)，由盤中量能決定方向。")
-
-    if close > open_p:
-        k_type = "🔴 盤中實體紅 K (開低走高或強開強走)"
-        opening_diag.append("多方持續推進，買盤居主導地位。")
-    elif close < open_p:
-        k_type = "🟢 盤中實體黑 K (開高走低或弱勢下殺)"
-        opening_diag.append("需留意盤中逢高調節或避險賣壓。")
-    else:
-        k_type = "⚪ 盤中十字星 (多空平手拉鋸)"
-
-    return ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag
-
-def backtest_strategy(df_stock, market_type="tw"):
-    if len(df_stock) < 60:
-        return None
-
-    signals = (
-        (df_stock['Close'] > df_stock['MA20']) &
-        (df_stock['Close'] > df_stock['Close'].shift(1)) &
-        (df_stock['Volume'] > df_stock['Vol_MA5']) &
-        (df_stock['OSC'] > 0)
-    )
-
-    n_bars = len(df_stock)
-    trade_returns = []
-    i = 0
-
-    if market_type == "us":
-        cost_rate = 0.0010
-    elif market_type == "futures":
-        cost_rate = 0.0004
-    else:
-        cost_rate = 0.0045
-
-    while i < n_bars - 6:
-        if signals.iloc[i]:
-            entry_p = safe_float(df_stock['Open'].iloc[i + 1])
-            if entry_p <= 0:
-                entry_p = safe_float(df_stock['Close'].iloc[i + 1])
-            exit_p = safe_float(df_stock['Open'].iloc[i + 6])
-            if exit_p <= 0:
-                exit_p = safe_float(df_stock['Close'].iloc[i + 6])
-
-            if entry_p > 0 and exit_p > 0:
-                net_ret = ((exit_p - entry_p) / entry_p - cost_rate) * 100.0
-                trade_returns.append(net_ret)
-                i += 6
-                continue
-        i += 1
-
-    if not trade_returns:
-        return None
-
-    wins = [r for r in trade_returns if r > 0]
-    win_rate = (len(wins) / len(trade_returns)) * 100.0
-    avg_return = float(np.mean(trade_returns))
-    worst_single_loss = float(min(trade_returns))
-
-    equity_curve = [100.0]
-    for r in trade_returns:
-        equity_curve.append(equity_curve[-1] * (1.0 + r / 100.0))
-
-    peak = equity_curve[0]
-    max_dd = 0.0
-    for val in equity_curve:
-        if val > peak:
-            peak = val
-        dd = (peak - val) / peak * 100.0
-        if dd > max_dd:
-            max_dd = dd
-
-    return {
-        "count": len(trade_returns),
-        "win_rate": win_rate,
-        "avg_return": avg_return,
-        "worst_loss": worst_single_loss,
-        "mdd": max_dd
-    }
-
-@st.cache_data(ttl=300, show_spinner=False)
-def analyze_forex_data():
-    res = {
-        "twd_rate": None,
-        "twd_change": 0.0,
-        "twd_status": "資料檢索中",
-        "twd_trend": "平穩",
-        "dxy_rate": None,
-        "dxy_trend": "中立",
-        "jpy_rate": None,
-        "jpy_risk": "正常",
-        "source": "Yahoo 即時外匯",
-        "has_real_twd": False
-    }
-
-    bot_data = fetch_bot_forex()
-    if bot_data:
-        res["twd_rate"] = bot_data["usd_twd"]
-        res["source"] = bot_data["source"]
-        res["has_real_twd"] = True
-
-    df_usdtwd = fetch_and_calc("USDTWD=X")
-    if df_usdtwd is None:
-        df_usdtwd = fetch_and_calc("TWD=X")
-    df_dxy = fetch_and_calc("DX-Y.NYB")
-    df_jpy = fetch_and_calc("JPY=X")
-
-    try:
-        if df_usdtwd is not None and len(df_usdtwd) >= 2:
-            last_twd = safe_float(df_usdtwd.iloc[-1]['Close'])
-            prev_twd = safe_float(df_usdtwd.iloc[-2]['Close'])
-            ma20_twd = safe_float(df_usdtwd['MA20'].iloc[-1], last_twd)
-
-            if not res["has_real_twd"] and last_twd > 0:
-                res["twd_rate"] = last_twd
-                res["has_real_twd"] = True
-
-            if last_twd > 0 and prev_twd > 0:
-                diff = last_twd - prev_twd
-                res["twd_change"] = diff
-                if diff < -0.05:
-                    res["twd_status"] = "🟢 今日強勢升值 (外資熱錢湧入)"
-                elif diff > 0.05:
-                    res["twd_status"] = "🔴 今日明顯貶值 (外資匯出壓力)"
-                else:
-                    res["twd_status"] = "⚪ 今日窄幅震盪整理"
-
-                if res["twd_rate"] and res["twd_rate"] < ma20_twd:
-                    res["twd_trend"] = "波段升值格局 (有利權值股與台指)"
-                else:
-                    res["twd_trend"] = "波段貶值格局 (權值承壓，有利外銷)"
-
-        if df_dxy is not None and len(df_dxy) >= 2:
-            last_dxy = safe_float(df_dxy.iloc[-1]['Close'])
-            ma20_dxy = safe_float(df_dxy['MA20'].iloc[-1], last_dxy)
-            res["dxy_rate"] = last_dxy
-            if last_dxy > 0:
-                res["dxy_trend"] = "偏強 (美元強勢，新興市場資金保守)" if last_dxy > ma20_dxy else "偏弱 (美元回落，熱錢回流)"
-
-        if df_jpy is not None and len(df_jpy) >= 5:
-            last_jpy = safe_float(df_jpy.iloc[-1]['Close'])
-            ma5_jpy = safe_float(df_jpy['MA5'].iloc[-1], last_jpy)
-            res["jpy_rate"] = last_jpy
-            if last_jpy > 0 and ma5_jpy > 0 and (last_jpy - ma5_jpy) / (ma5_jpy + 1e-9) < -0.015:
-                res["jpy_risk"] = "⚠️ 警示：日圓近期急升，提防日圓套利平倉賣壓！"
+# ================= 四大權威機構研究報告渲染器 =================
+def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
+    suite = res.get("inst_suite", {})
+    if not suite or not suite.get("has_suite"):
+        return
+
+    fin = suite["financial_analysis"]
+    eq = suite["equity_research"]
+    earn = suite["earnings_reviewer"]
+    mkt = suite["market_researcher"]
+    an_data = res["analyst_data"]
+    curr_code = "USD" if mode_type == "us" else "NTD"
+    curr_sym = "USD" if mode_type == "us" else "元"
+    disp_name = get_stock_display_label(ticker_raw, is_fav=False)
+
+    with st.expander("🏛️ 【四大權威機構深度研究報告】Financial / Equity / Earnings / Market", expanded=True):
+        st.caption("整合華爾街與法人機構四大核心投研維度：財務分析、股票估值研究、財報盈餘檢視、市場籌碼與相對強度。")
+        tab_fa, tab_eq, tab_er, tab_mr, tab_export = st.tabs([
+            "📊 財務分析", "📑 股票研究", "📈 財報分析", "🌐 市場研究", "📥 完整報告"
+        ])
+
+        with tab_fa:
+            st.markdown("#### 📊 Financial Analysis（企業財務結構與現金流護城河）")
+            fa_c1, fa_c2, fa_c3 = st.columns(3)
+            fa_c1.metric("毛利率 (Gross)", f"{fin['gross_margin']:.1f}%" if fin['gross_margin'] is not None else "未揭露")
+            fa_c2.metric("營益率 (Operating)", f"{fin['op_margin']:.1f}%" if fin['op_margin'] is not None else "未揭露")
+            fa_c3.metric("淨利率 (Net)", f"{fin['profit_margin']:.1f}%" if fin['profit_margin'] is not None else "未揭露")
+
+            fa_c4, fa_c5, fa_c6 = st.columns(3)
+            fa_c4.metric("股東權益報酬 (ROE)", f"{fin['roe']:.1f}%" if fin['roe'] is not None else "未揭露")
+            fa_c5.metric("資產報酬率 (ROA)", f"{fin['roa']:.1f}%" if fin['roa'] is not None else "未揭露")
+            fa_c6.metric("負債權益比 (D/E)", f"{fin['debt_to_equity']:.1f}%" if fin['debt_to_equity'] is not None else "未揭露")
+
+            fa_c7, fa_c8 = st.columns(2)
+            cr_str = f"{fin['current_ratio']:.2f}" if fin['current_ratio'] is not None else "--"
+            qr_str = f"{fin['quick_ratio']:.2f}" if fin['quick_ratio'] is not None else "--"
+            fa_c7.metric("流動比率 / 速動比率", f"{cr_str} / {qr_str}")
+            fa_c8.metric("自由現金流 (FCF)", format_large_money(fin['free_cf'], curr_code))
+
+            st.markdown(f"""
+            <div class="inst-report-box">
+                <b>💡 首席財務分析師診斷：</b><br>
+                • <b>帳上現金部位</b>：{format_large_money(fin['total_cash'], curr_code)} ｜ <b>總負債規模</b>：{format_large_money(fin['total_debt'], curr_code)}<br>
+                • <b>營業現金流 (OCF)</b>：{format_large_money(fin['op_cf'], curr_code)}（{'🟢 現金流充沛，具備強大資本支出與配息底氣' if (fin['op_cf'] and fin['op_cf'] > 0) else '⚪ 現金流資料待更新或屬金融/ETF資產'}）
+            </div>
+            """, unsafe_allow_html=True)
+
+        with tab_eq:
+            st.markdown("#### 📑 Equity Research（機構估值模型與目標位階研究）")
+            eq_c1, eq_c2, eq_c3 = st.columns(3)
+            eq_c1.metric("歷史本益比 (Trailing PE)", f"{eq['trailing_pe']:.1f}x" if (eq['trailing_pe'] and eq['trailing_pe'] > 0) else "不適用")
+            eq_c2.metric("預估本益比 (Forward PE)", f"{eq['forward_pe']:.1f}x" if (eq['forward_pe'] and eq['forward_pe'] > 0) else "未揭露")
+            eq_c3.metric("股價淨值比 (P/B)", f"{eq['pb_ratio']:.2f}x" if eq['pb_ratio'] is not None else "未揭露")
+
+            eq_c4, eq_c5, eq_c6 = st.columns(3)
+            eq_c4.metric("PEG 成長估值比", f"{eq['peg_ratio']:.2f}" if eq['peg_ratio'] is not None else "未揭露")
+            eq_c5.metric("EV / EBITDA", f"{eq['ev_ebitda']:.1f}x" if eq['ev_ebitda'] is not None else "未揭露")
+            eq_c6.metric("現金殖利率", f"{eq['div_yield']:.2f}%" if eq['div_yield'] is not None else "未揭露")
+
+            upside_str = "暫無目標均價"
+            c_price = safe_float(res.get('close', 0.0))
+            if an_data.get("target_mean", 0) > 0 and c_price > 0:
+                up_val = ((an_data["target_mean"] - c_price) / c_price) * 100.0
+                upside_str = f"目標均價 {an_data['target_mean']:.2f} {curr_sym}（潛在空間 {up_val:+.1f}%，區間 {an_data['target_low']:.1f} ~ {an_data['target_high']:.1f}）"
+            elif an_data.get("target_mean", 0) > 0:
+                upside_str = f"目標均價 {an_data['target_mean']:.2f} {curr_sym}"
+
+            val_verdict = "合理估值區間"
+            if eq['forward_pe'] and eq['trailing_pe'] and eq['forward_pe'] < eq['trailing_pe']:
+                val_verdict = "🟢 未來盈餘成長帶動 Forward PE 收斂，具備估值擴張潛力"
+            elif eq['trailing_pe'] and eq['trailing_pe'] > 35:
+                val_verdict = "🟡 高本益比成長溢價區，需高度仰賴後續財報高成長支撐"
+
+            st.markdown(f"""
+            <div class="inst-report-box">
+                <b>💡 機構股票研究評等摘要：</b><br>
+                • <b>華爾街/法人共識評等</b>：{an_data.get('rec_label', '⚪ 中立')}（共 {an_data.get('opinions', 0)} 家機構覆蓋）<br>
+                • <b>法人目標價位階</b>：{upside_str}<br>
+                • <b>估值模型結論</b>：{val_verdict}（每股淨值 Book Value：{f"{eq['book_val']:.2f} {curr_sym}" if eq['book_val'] else "未揭露"}）
+            </div>
+            """, unsafe_allow_html=True)
+
+        with tab_er:
+            st.markdown("#### 📈 Earnings Reviewer（季度財報成長動能與盈餘驚奇度）")
+            er_c1, er_c2, er_c3 = st.columns(3)
+            er_c1.metric("營收年增率 (Rev YoY)", f"{earn['rev_growth']:+.1f}%" if earn['rev_growth'] is not None else "未揭露")
+            er_c2.metric("盈餘年增率 (Earn YoY)", f"{earn['earn_growth']:+.1f}%" if earn['earn_growth'] is not None else "未揭露")
+            er_c3.metric("季度盈餘成長 (QoQ/YoY)", f"{earn['q_earn_growth']:+.1f}%" if earn['q_earn_growth'] is not None else "未揭露")
+
+            er_c4, er_c5 = st.columns(2)
+            er_c4.metric("近四季累計 EPS (Trailing)", f"{earn['trailing_eps']:.2f} {curr_sym}" if earn['trailing_eps'] is not None else "未揭露")
+            er_c5.metric("法人預估未來 EPS (Forward)", f"{earn['forward_eps']:.2f} {curr_sym}" if earn['forward_eps'] is not None else "未揭露")
+
+            st.caption(f"📌 近四季總營收規模：**{format_large_money(earn['total_rev'], curr_code)}** ｜ EBITDA 獲利規模：**{format_large_money(earn['ebitda_val'], curr_code)}**")
+
+            if earn["surprises"]:
+                st.markdown("##### 📋 近四季財報實際 EPS vs 法人預估驚奇度 (Earnings Surprise)")
+                st.dataframe(pd.DataFrame(earn["surprises"]), use_container_width=True, hide_index=True)
             else:
-                res["jpy_risk"] = "✅ 正常：日圓匯率平穩，無顯著平倉風險"
-    except Exception:
-        pass
+                st.info("💡 該標的目前無歷史季度 EPS Surprise 明細表，請參考上方營收與盈餘年增率指標。")
 
-    return res
+        with tab_mr:
+            st.markdown("#### 🌐 Market Researcher（產業地位、機構籌碼與市場相對強度）")
+            mr_c1, mr_c2, mr_c3 = st.columns(3)
+            mr_c1.metric("總市值規模", format_large_money(mkt['mkt_cap'], curr_code))
+            mr_c2.metric("外資/機構持股比", f"{mkt['inst_held']:.1f}%" if mkt['inst_held'] is not None else "未揭露")
+            mr_c3.metric("Beta 波動風險", f"{mkt['beta']:.2f}" if mkt['beta'] is not None else "未揭露")
 
-# ★ 嚴格先定義 preload_global_benchmarks，確保位於主程式呼叫前
-@st.cache_data(ttl=120, show_spinner=False)
-def preload_global_benchmarks():
-    tickers = ["^TWII", "WTX=F", "TSM", "^SOX", "^GSPC"]
-    results = {}
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        futs = {t: ex.submit(fetch_and_calc, t) for t in tickers}
-        for t, f in futs.items():
-            try:
-                results[t] = f.result(timeout=5.0)
-            except Exception:
-                results[t] = None
-    return results
+            mr_c4, mr_c5 = st.columns(2)
+            mr_c4.metric("近 20 日相對大盤超額報酬 (Alpha)", f"{res.get('rel_alpha_20d', 0.0):+.2f}%",
+                         "強於大盤" if res.get('rel_alpha_20d', 0.0) > 0 else "弱於大盤")
+            mr_c5.metric("近 60 日相對大盤超額報酬 (Alpha)", f"{res.get('rel_alpha_60d', 0.0):+.2f}%",
+                         "波段領頭羊" if res.get('rel_alpha_60d', 0.0) > 0 else "波段落後大盤")
 
-def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, forex_info, asset_type="tw", include_inst_suite=True):
-    live_twse = fetch_twse_realtime(ticker) if asset_type == "tw" else None
-    ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag = analyze_opening_and_ma(df_stock, live_twse)
+            pos_52w_str = "未揭露"
+            if mkt['high_52w'] and mkt['low_52w'] and (mkt['high_52w'] - mkt['low_52w']) > 0:
+                pos_pct = ((c_price - mkt['low_52w']) / (mkt['high_52w'] - mkt['low_52w'])) * 100.0
+                pos_52w_str = f"位於 52 週區間之 {pos_pct:.1f}% 位階（低點 {mkt['low_52w']:.2f} ～ 高點 {mkt['high_52w']:.2f}）"
 
-    last_stk = df_stock.iloc[-1]
-    prev_stk = df_stock.iloc[-2] if len(df_stock) >= 2 else last_stk
-    
-    close = safe_float(last_stk['Close'])
+            st.markdown(f"""
+            <div class="inst-report-box">
+                <b>💡 市場與籌碼研究員觀點：</b><br>
+                • <b>所屬產業板塊</b>：{mkt['sector']} — {mkt['industry']}<br>
+                • <b>52 週價格位階</b>：{pos_52w_str}<br>
+                • <b>籌碼穩定度</b>：內部人/大股東持股 {f"{mkt['insider_held']:.1f}%" if mkt['insider_held'] is not None else "--"} ｜ 10日均量 vs 3月均量比：{f"{(mkt['avg_vol_10d']/(mkt['avg_vol_3m']+1e-9)):.2f}x" if (mkt['avg_vol_10d'] and mkt['avg_vol_3m']) else "--"}
+            </div>
+            """, unsafe_allow_html=True)
+
+            if mkt["summary_text"]:
+                with st.expander("📖 查看企業核心業務與全球競爭護城河簡介", expanded=False):
+                    st.write(mkt["summary_text"])
+
+        with tab_export:
+            st.markdown("#### 📥 完整機構級四維度投研報告（可直接複製或下載存檔）")
+            report_md = f"""# 🏛️ 【{disp_name}】機構級四維度深度研究報告
+- **報告生成時間**：{datetime.now(TAIPEI_TZ).strftime('%Y-%m-%d %H:%M')}
+- **當前最新報價**：{res['close']:.2f} {curr_sym} ｜ **量化綜合總分**：{res['total_score']} / 100
+- **建議波段停損價**：{res['stop_loss']:.2f} {curr_sym} ｜ **波段目標價**：{res['target_60d']:.2f} {curr_sym}
+
+---
+## 1. 📊 Financial Analysis（財務分析）
+- **三率表現**：毛利率 `{f"{fin['gross_margin']:.1f}%" if fin['gross_margin'] is not None else "N/A"}` ｜ 營益率 `{f"{fin['op_margin']:.1f}%" if fin['op_margin'] is not None else "N/A"}` ｜ 淨利率 `{f"{fin['profit_margin']:.1f}%" if fin['profit_margin'] is not None else "N/A"}`
+- **資本報酬**：ROE `{f"{fin['roe']:.1f}%" if fin['roe'] is not None else "N/A"}` ｜ ROA `{f"{fin['roa']:.1f}%" if fin['roa'] is not None else "N/A"}`
+- **償債與現金流**：負債權益比 `{f"{fin['debt_to_equity']:.1f}%" if fin['debt_to_equity'] is not None else "N/A"}` ｜ 自由現金流 `{format_large_money(fin['free_cf'], curr_code)}`
+
+## 2. 📑 Equity Research（股票估值研究）
+- **機構共識評等**：{an_data.get('rec_label', 'N/A')}（共 {an_data.get('opinions', 0)} 家機構追蹤，目標均價 `{an_data.get('target_mean', 0):.2f} {curr_sym}`）
+- **核心估值倍數**：Trailing PE `{f"{eq['trailing_pe']:.1f}x" if eq['trailing_pe'] else "N/A"}` ｜ Forward PE `{f"{eq['forward_pe']:.1f}x" if eq['forward_pe'] else "N/A"}` ｜ P/B `{f"{eq['pb_ratio']:.2f}x" if eq['pb_ratio'] else "N/A"}` ｜ EV/EBITDA `{f"{eq['ev_ebitda']:.1f}x" if eq['ev_ebitda'] else "N/A"}`
+
+## 3. 📈 Earnings Reviewer（財報與盈餘分析）
+- **成長動能**：營收年增率 `{f"{earn['rev_growth']:+.1f}%" if earn['rev_growth'] is not None else "N/A"}` ｜ 盈餘年增率 `{f"{earn['earn_growth']:+.1f}%" if earn['earn_growth'] is not None else "N/A"}`
+- **每股盈餘**：Trailing EPS `{f"{earn['trailing_eps']:.2f}" if earn['trailing_eps'] is not None else "N/A"}` ｜ Forward EPS `{f"{earn['forward_eps']:.2f}" if earn['forward_eps'] is not None else "N/A"}`
+
+## 4. 🌐 Market Researcher（市場與籌碼研究）
+- **產業板塊**：{mkt['sector']} / {mkt['industry']} ｜ **總市值**：{format_large_money(mkt['mkt_cap'], curr_code)}
+- **機構籌碼與相對強度**：外資/機構持股 `{f"{mkt['inst_held']:.1f}%" if mkt['inst_held'] is not None else "N/A"}` ｜ 近20日相對大盤 Alpha `{res.get('rel_alpha_20d', 0.0):+.2f}%` ｜ 近60日相對大盤 Alpha `{res.get('rel_alpha_60d', 0.0):+.2f}%`
+- **技術均線結構**：{res['ma_alignment']}
+"""
+            st.code(report_md, language="markdown")
+            st.download_button(
+                label="💾 下載完整機構研究報告 (.md)",
+                data=report_md.encode("utf-8"),
+                file_name=f"Research_Report_{ticker_raw}_{datetime.now(TAIPEI_TZ).strftime('%Y%m%d')}.md",
+                mime="text/markdown",
+                use_container_width=True,
+                key=f"dl_rep_{ticker_raw}_{mode_type}"
+            )
+
+# ================= 模組共用渲染器 =================
+def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallback_warning=None, ticker_raw=None):
+    is_downtrend = res.get('is_breakdown', False) or (res['close'] < res['ma_status']['ma20_val'])
+    close = safe_float(res.get('close', 0.0))
     if close <= 0:
-        pos_closes = df_stock['Close'][df_stock['Close'] > 0]
-        close = safe_float(pos_closes.iloc[-1]) if not pos_closes.empty else 1.0
+        close = 1.0
 
-    atr_val = safe_float(last_stk['ATR14'], default=close * 0.02)
+    risk_unit = max(close - safe_float(res.get('stop_loss', 0.0)), close * 0.015)
+    target_1 = close + (1.5 * risk_unit)
+    an_data = res['analyst_data']
+    stable_key_suffix = f"{mode_type}_{ticker_raw or 'default'}"
 
-    global_score = 0
-    global_reasons = []
-
-    if asset_type == "futures":
-        analyst_data = fetch_futures_analyst_consensus(ticker, df_stock, df_market)
-        fund_data = {"has_data": False, "score": None, "reasons": []}
-        inst_suite = {"has_suite": False}
-        global_score = 12
-    elif asset_type == "us":
-        analyst_data = fetch_analyst_consensus(ticker)
-        fund_data = fetch_fundamentals(ticker)
-        inst_suite = fetch_institutional_research_suite(ticker) if include_inst_suite else {"has_suite": False}
-        global_score = 10
+    if mode_type == "futures":
+        currency_sym = "點"
+        unit_name = "口 (Lots)"
+        spec = custom_spec or TW_FUTURES_SPECS.get("WTX", {"tick_value": 200, "initial_margin": 250000, "maintenance_margin": 192000, "name": "台指期貨", "desc": "台指契約"})
+    elif mode_type == "us":
+        currency_sym = "USD"
+        unit_name = "股 (Shares)"
     else:
-        analyst_data = fetch_analyst_consensus(ticker)
-        fund_data = fetch_fundamentals(ticker)
-        inst_suite = fetch_institutional_research_suite(ticker) if include_inst_suite else {"has_suite": False}
-        try:
-            if df_tsm is not None and len(df_tsm) >= 2:
-                tsm_change = ((df_tsm['Close'].iloc[-1] - df_tsm['Close'].iloc[-2]) / df_tsm['Close'].iloc[-2]) * 100
-                if tsm_change >= 1.5:
-                    global_score += 15
-                    global_reasons.append(f"TSM ADR 大漲 ({tsm_change:+.1f}%)，國際連動強勁")
-                elif tsm_change > 0:
-                    global_score += 10
-                    global_reasons.append(f"TSM ADR 小漲 ({tsm_change:+.1f}%)，美股平穩偏多")
-                else:
-                    global_score += 6
+        currency_sym = "元"
+        unit_name = "張 (Lots)"
+
+    if fallback_warning:
+        st.info(fallback_warning)
+
+    disp_header = get_stock_display_label(ticker_raw, is_fav=False) if ticker_raw else ""
+    if disp_header:
+        st.markdown(f"**📌 當前診斷標的：`{disp_header}`**")
+
+    if res.get("live_info"):
+        status_badge = res['live_info'].get('status_label', '⚪ 歷史報價')
+        st.caption(f"⚡ **TWSE 撮合系統** ｜ {status_badge} ｜ 時間：{res['live_info']['time']}")
+    elif mode_type == "futures":
+        st.caption(f"⚡ **期貨專屬規格載入** ｜ 單位：指數點 ｜ {spec['name']} 保證金參數就位")
+    elif mode_type == "us":
+        st.caption(f"⚡ **美股即時行情連線** ｜ 幣別：USD ｜ 資料更新時序完整")
+
+    if mode_type in ("tw", "us") and ticker_raw:
+        m_key = "tw" if mode_type == "tw" else "us"
+        cur_favs = user_memory.get(f"{m_key}_favorites", [])
+        is_fav = ticker_raw in cur_favs
+        fav_label = "⭐ 已加入常用清單 (點此移出)" if is_fav else "☆ 收藏至常用清單"
+        if st.button(fav_label, use_container_width=True, key=f"btn_fav_toggle_{stable_key_suffix}"):
+            toggle_favorite_stock(m_key, ticker_raw)
+            st.rerun()
+
+    c1, c2 = st.columns(2)
+    c1.metric("綜合決策總分", f"{res['total_score']} / 100")
+    c2.metric("最新點位/現價", f"{close:.2f} {currency_sym}")
+
+    c3, c4 = st.columns(2)
+    c3.metric("建議防守價 (停損)", f"{res['stop_loss']:.2f} {currency_sym}")
+    risk_pct = (risk_unit / close * 100.0) if close > 0 else 0.0
+    c4.metric("最大預期風險", f"{risk_pct:.2f}%")
+
+    # 0. 即時分時走勢圖 & 台股五檔委買賣明細 (雙向深度能量條看板)
+    with st.expander("📺 【即時分時走勢圖 (含昨收平盤線 & VWAP均價) ＆ 五檔委買賣明細】", expanded=True):
+        chart_ticker = "WTX=F" if mode_type == "futures" else (ticker_raw or "2330.TW")
+        if mode_type == "futures" and df_futures_bench is None:
+            chart_ticker = "^TWII"
+        render_intraday_chart_widget(chart_ticker, title_name=disp_header or chart_ticker)
+
+        live_info = res.get("live_info")
+        if live_info and live_info.get("bid_prices") and live_info.get("ask_prices"):
+            st.markdown("#### 📋 證交所即時五檔委買賣盤口深度")
+            b_p = live_info["bid_prices"]
+            b_v = live_info["bid_vols"]
+            a_p = live_info["ask_prices"]
+            a_v = live_info["ask_vols"]
+
+            total_bid_v = sum(b_v)
+            total_ask_v = sum(a_v)
+            total_depth = total_bid_v + total_ask_v
+            bid_ratio = (total_bid_v / total_depth * 100.0) if total_depth > 0 else 50.0
+
+            st.caption(f"🔥 **委買總量：{total_bid_v:,} 張 ({bid_ratio:.1f}%)** ｜ ❄️ **委賣總量：{total_ask_v:,} 張 ({100.0-bid_ratio:.1f}%)**")
+            st.progress(min(max(bid_ratio / 100.0, 0.0), 1.0))
+
+            max_vol = max(max(b_v, default=1), max(a_v, default=1), 1)
+
+            rows_list = []
+            for i in range(max(len(b_p), len(a_p))):
+                bp = b_p[i] if i < len(b_p) and b_p[i] > 0 else None
+                bv = b_v[i] if i < len(b_v) and b_v[i] > 0 else 0
+                ap = a_p[i] if i < len(a_p) and a_p[i] > 0 else None
+                av = a_v[i] if i < len(a_v) and a_v[i] > 0 else 0
+
+                bp_str = f"{bp:,.2f}" if bp else "--"
+                bv_str = f"{bv:,}" if bv else "--"
+                ap_str = f"{ap:,.2f}" if ap else "--"
+                av_str = f"{av:,}" if av else "--"
+
+                b_bar_pct = min((bv / max_vol) * 100.0, 100.0) if bv else 0.0
+                a_bar_pct = min((av / max_vol) * 100.0, 100.0) if av else 0.0
+
+                row_html = (
+                    f"<div style='display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; font-size:0.92rem; height:28px;'>"
+                    f"<div style='flex:1; display:flex; align-items:center; justify-content:flex-end; position:relative; background:rgba(229,57,53,0.06); border-radius:4px 0 0 4px; height:100%; padding-right:8px; overflow:hidden;'>"
+                    f"<div style='position:absolute; right:0; top:0; bottom:0; width:{b_bar_pct:.1f}%; background:rgba(229,57,53,0.22); z-index:1;'></div>"
+                    f"<span style='position:relative; z-index:2; margin-right:8px; color:#555;'>{bv_str}張</span>"
+                    f"<b style='position:relative; z-index:2; color:#e53935; font-size:0.96rem;'>{bp_str}</b>"
+                    f"</div>"
+                    f"<div style='width:36px; text-align:center; font-size:0.75rem; color:#888; font-weight:700;'>{i+1}</div>"
+                    f"<div style='flex:1; display:flex; align-items:center; justify-content:flex-start; position:relative; background:rgba(67,160,71,0.06); border-radius:0 4px 4px 0; height:100%; padding-left:8px; overflow:hidden;'>"
+                    f"<div style='position:absolute; left:0; top:0; bottom:0; width:{a_bar_pct:.1f}%; background:rgba(67,160,71,0.22); z-index:1;'></div>"
+                    f"<b style='position:relative; z-index:2; color:#43a047; font-size:0.96rem;'>{ap_str}</b>"
+                    f"<span style='position:relative; z-index:2; margin-left:8px; color:#555;'>{av_str}張</span>"
+                    f"</div>"
+                    f"</div>"
+                )
+                rows_list.append(row_html)
+
+            depth_board_html = (
+                f"<div style='background:rgba(128,128,128,0.04); border:1px solid rgba(128,128,128,0.18); border-radius:10px; padding:8px 10px; margin-top:6px;'>"
+                f"<div style='display:flex; justify-content:space-between; font-size:0.78rem; color:#777; margin-bottom:6px; padding:0 6px;'>"
+                f"<span>買進掛單 (張數 / 委買價)</span>"
+                f"<span>委賣價 / 張數 (賣出掛單)</span>"
+                f"</div>"
+                f"{''.join(rows_list)}"
+                f"</div>"
+            )
+            st.markdown(depth_board_html, unsafe_allow_html=True)
+
+    # ★★★ 當沖實戰決策室 (台股專屬・手機響應式完全適配版) ★★★
+    if mode_type == "tw":
+        with st.expander("⚡ 【當沖實戰決策室 (VWAP生命線・ORB突破・CDP五關卡・保本跳動計算)】", expanded=True):
+            df_intra, _ = fetch_intraday_series(ticker_raw or "2330.TW")
+            cdp_info = calc_cdp_levels(df_asset)
+            orb_info = calc_orb_levels(df_intra)
+
+            now_t = datetime.now(TAIPEI_TZ)
+            now_time_str = now_t.strftime("%H:%M:%S")
+
+            if "13:20:00" <= now_time_str <= "13:35:00":
+                st.error("🚨 **【當沖強制平倉警報】目前已過 13:20！請立即市價清倉出清，嚴防盤後無法成交被迫留倉借券！**")
+            elif "13:00:00" <= now_time_str < "13:20:00":
+                st.warning("⚠️ **【尾盤平倉提醒】目前時間已過 13:00，請著手分批獲利了結或停損，準備結束當沖部位。**")
+
+            if orb_info:
+                vwap_val = orb_info["curr_vwap"]
+                vwap_diff = ((close - vwap_val) / (vwap_val + 1e-9)) * 100.0
+                st.markdown(f"""
+                <div class="daytrade-card">
+                    <b>🎯 當沖主力攻防信號：</b><br>
+                    • <b>型態診斷</b>：{orb_info['status_label']}<br>
+                    • <b>開盤 15 分 K 區間</b>：高點 <b class="tw-up">{orb_info['orb_high']:.2f}</b> ｜ 低點 <b class="tw-down">{orb_info['orb_low']:.2f}</b><br>
+                    • <b>VWAP 均價線</b>：<b>{vwap_val:.2f}</b>（現價乖離：<span class="{('tw-up' if vwap_diff > 0 else 'tw-down')}">{vwap_diff:+.2f}%</span>）
+                </div>
+                """, unsafe_allow_html=True)
+
+            # ★ 手機版完美適配：CDP 價格階梯看板（告別欄位擠壓與數值省略號）
+            if cdp_info:
+                st.markdown("##### 📏 今日 CDP 逆勢五大關鍵價（依前一交易日日K計算）")
+                cdp_ladder_html = f"""
+                <div style="background: rgba(128,128,128,0.06); border: 1px solid rgba(128,128,128,0.22); border-radius: 12px; padding: 8px 12px; margin: 6px 0 10px 0;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding: 6px 0; border-bottom: 1px dashed rgba(128,128,128,0.2);">
+                        <span style="background: rgba(229,57,53,0.16); color: #e53935; font-weight: 700; padding: 2px 8px; border-radius: 6px; font-size: 0.85rem;">AH 最高阻力</span>
+                        <b style="color: #e53935; font-size: 1.15rem;">{cdp_info['AH']:,.2f}</b>
+                        <span style="color: #888; font-size: 0.78rem;">極限超買 / 追高警戒</span>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding: 6px 0; border-bottom: 1px dashed rgba(128,128,128,0.2);">
+                        <span style="background: rgba(255,152,0,0.16); color: #f57c00; font-weight: 700; padding: 2px 8px; border-radius: 6px; font-size: 0.85rem;">NH 次高阻力</span>
+                        <b style="color: #f57c00; font-size: 1.15rem;">{cdp_info['NH']:,.2f}</b>
+                        <span style="color: #888; font-size: 0.78rem;">多單停利 / 波段壓力</span>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding: 6px 0; border-bottom: 1px dashed rgba(128,128,128,0.2);">
+                        <span style="background: rgba(26,115,232,0.16); color: #1a73e8; font-weight: 700; padding: 2px 8px; border-radius: 6px; font-size: 0.85rem;">CDP 多空平衡</span>
+                        <b style="color: #1a73e8; font-size: 1.15rem;">{cdp_info['CDP']:,.2f}</b>
+                        <span style="color: #888; font-size: 0.78rem;">今日強弱分水嶺軸心</span>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding: 6px 0; border-bottom: 1px dashed rgba(128,128,128,0.2);">
+                        <span style="background: rgba(67,160,71,0.16); color: #43a047; font-weight: 700; padding: 2px 8px; border-radius: 6px; font-size: 0.85rem;">NL 次低支撐</span>
+                        <b style="color: #43a047; font-size: 1.15rem;">{cdp_info['NL']:,.2f}</b>
+                        <span style="color: #888; font-size: 0.78rem;">空單回補 / 拉回承接</span>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding: 6px 0;">
+                        <span style="background: rgba(46,125,50,0.16); color: #2e7d32; font-weight: 700; padding: 2px 8px; border-radius: 6px; font-size: 0.85rem;">AL 最低支撐</span>
+                        <b style="color: #2e7d32; font-size: 1.15rem;">{cdp_info['AL']:,.2f}</b>
+                        <span style="color: #888; font-size: 0.78rem;">超跌防守 / 破底警戒</span>
+                    </div>
+                </div>
+                """
+                st.markdown(cdp_ladder_html, unsafe_allow_html=True)
+
+            # ★ 手機版完美適配：現股當沖損益與保本跳動計算機（2×2 矩陣看板）
+            st.markdown("##### 🧮 現股當沖損益與保本跳動檔位計算機")
+            calc_c1, calc_c2 = st.columns(2)
+            with calc_c1:
+                dt_shares_lot = st.number_input("當沖進場張數 (張)", min_value=1, max_value=500, value=1, step=1, key=f"dt_lots_{stable_key_suffix}")
+            with calc_c2:
+                saved_disc = float(user_memory.get("daytrade_fee_discount", 0.28))
+                dt_discount = st.number_input("券商折讓 (如0.28)", min_value=0.10, max_value=1.00, value=saved_disc, step=0.01, key=f"dt_disc_{stable_key_suffix}")
+
+            needed_ticks, tick_sz, cost_1lot, profit_1tick = calc_daytrade_breakeven(close, dt_discount)
+            total_cost_lots = cost_1lot * dt_shares_lot
+            total_1tick_profit = profit_1tick * dt_shares_lot
+            net_profit_1tick = total_1tick_profit - total_cost_lots
+
+            net_color = "#e53935" if net_profit_1tick > 0 else "#43a047"
+            calc_grid_html = f"""
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin: 8px 0 10px 0;">
+                <div style="background: rgba(128,128,128,0.06); border: 1px solid rgba(128,128,128,0.2); border-radius: 10px; padding: 7px 10px;">
+                    <div style="font-size:0.78rem; color:#777;">每檔跳動金額 (Tick)</div>
+                    <div style="font-size:1.15rem; font-weight:800; color:#1a73e8;">{tick_sz:.2f} 元/股</div>
+                    <div style="font-size:0.75rem; color:#888;">跳動 1 檔 = {int(profit_1tick * dt_shares_lot):,} 元</div>
+                </div>
+                <div style="background: rgba(128,128,128,0.06); border: 1px solid rgba(128,128,128,0.2); border-radius: 10px; padding: 7px 10px;">
+                    <div style="font-size:0.78rem; color:#777;">損益兩平跳動檔位</div>
+                    <div style="font-size:1.15rem; font-weight:800; color:#e53935;">{needed_ticks} 檔保本</div>
+                    <div style="font-size:0.75rem; color:#888;">跳 {needed_ticks} 檔打平成本</div>
+                </div>
+                <div style="background: rgba(128,128,128,0.06); border: 1px solid rgba(128,128,128,0.2); border-radius: 10px; padding: 7px 10px;">
+                    <div style="font-size:0.78rem; color:#777;">買賣總稅費成本</div>
+                    <div style="font-size:1.15rem; font-weight:800;">{int(total_cost_lots):,} 元</div>
+                    <div style="font-size:0.75rem; color:#888;">當沖稅0.15% + 手續費</div>
+                </div>
+                <div style="background: rgba(128,128,128,0.06); border: 1px solid rgba(128,128,128,0.2); border-radius: 10px; padding: 7px 10px;">
+                    <div style="font-size:0.78rem; color:#777;">跳 1 檔淨盈虧</div>
+                    <div style="font-size:1.15rem; font-weight:800; color:{net_color};">{int(net_profit_1tick):+,} 元</div>
+                    <div style="font-size:0.75rem; color:#888;">{'扣除成本後獲利' if net_profit_1tick > 0 else '跳1檔尚不足打平'}</div>
+                </div>
+            </div>
+            """
+            st.markdown(calc_grid_html, unsafe_allow_html=True)
+            st.caption(f"📌 **實戰提醒**：目前股價為 `{close:.2f}` 元，跳動單位為 `{tick_sz:.2f}` 元。當沖進場後只要朝方向跳動 **{needed_ticks} 檔** 即保本，後續每多跳動 1 檔可實收 **{int(total_1tick_profit):,} 元**。")
+
+    if mode_type in ("tw", "us"):
+        render_institutional_research_panel(res, ticker_raw, mode_type=mode_type)
+
+    guide_title = "🎯 【權威期顧分析師共識 ＆ 精確期貨下單卡】" if mode_type == "futures" else "🎯 【權威分析師共識 ＆ 精確下單指引】"
+    with st.expander(guide_title, expanded=True):
+        if an_data.get("has_data"):
+            st.markdown(f"**機構綜合多空評等：** `{an_data['rec_label']}`")
+            st.caption(f"📌 {an_data['rec_desc']}（共計 **{an_data['opinions']} 家** 機構追蹤）")
+
+            a_c1, a_c2 = st.columns(2)
+            if an_data['target_mean'] > 0 and close > 0:
+                upside_pct = ((an_data['target_mean'] - close) / close) * 100.0
+                a_c1.metric("法人目標點位", f"{an_data['target_mean']:.1f} {currency_sym}", f"{upside_pct:+.1f}% 空間")
+            elif an_data['target_mean'] > 0:
+                a_c1.metric("法人目標點位", f"{an_data['target_mean']:.1f} {currency_sym}")
             else:
-                global_score += 8
-        except Exception:
-            global_score += 8
+                a_c1.metric("法人目標點位", "波段推算")
+            a_c2.metric("追蹤覆蓋機構", f"{an_data['opinions']} 家")
 
-    rel_alpha_20d = 0.0
-    rel_alpha_60d = 0.0
-    if df_market is not None and len(df_market) >= 21 and len(df_stock) >= 21:
-        stk_20d = (df_stock['Close'].iloc[-1] / (df_stock['Close'].iloc[-21] + 1e-9) - 1.0) * 100.0
-        mkt_20d = (df_market['Close'].iloc[-1] / (df_market['Close'].iloc[-21] + 1e-9) - 1.0) * 100.0
-        rel_alpha_20d = stk_20d - mkt_20d
-    if df_market is not None and len(df_market) >= 61 and len(df_stock) >= 61:
-        stk_60d = (df_stock['Close'].iloc[-1] / (df_stock['Close'].iloc[-61] + 1e-9) - 1.0) * 100.0
-        mkt_60d = (df_market['Close'].iloc[-1] / (df_market['Close'].iloc[-61] + 1e-9) - 1.0) * 100.0
-        rel_alpha_60d = stk_60d - mkt_60d
-
-    mkt_score = 0
-    mkt_reasons = []
-    if df_market is not None and not df_market.empty:
-        last_mkt = df_market.iloc[-1]
-        if last_mkt['Close'] > last_mkt['MA20']:
-            mkt_score += 12
-            mkt_reasons.append("大盤站上月線 (20MA)，多方主導發球權")
+            if an_data.get('target_high', 0) > 0:
+                st.caption(f"📊 法人區間分歧度：下檔支撐 **{an_data['target_low']:.1f}** ～ 上檔壓力 **{an_data['target_high']:.1f} {currency_sym}**")
         else:
-            mkt_reasons.append("大盤跌破月線，系統性拉回風險偏高")
-        if last_mkt['MA20'] > last_mkt['MA60']:
-            mkt_score += 8
-            mkt_reasons.append("大盤季線多頭架構 (20MA > 60MA)")
+            st.info("💡 該標的暫無多數機構公開報告，目標價已依波段動態空間推算。")
 
-    tech_score = 0
-    tech_reasons = []
-    vol_ratio = safe_float(last_stk['Volume']) / (safe_float(last_stk['Vol_MA5']) + 1e-9)
-    if close > prev_stk['Close'] and vol_ratio >= 1.2:
-        tech_score += 10
-        tech_reasons.append(f"量增價漲 (爆量比: {vol_ratio:.1f}x)")
-    elif close > prev_stk['Close']:
-        tech_score += 5
-        tech_reasons.append("價漲但量能平淡")
+        st.write("---")
+        st.markdown(f"### 📋 【精確{unit_name}下單執行卡】")
+        if is_downtrend:
+            st.error(f"🚫 **當前禁止做多**：現價（{close:.2f} {currency_sym}）已跌破月線生命線（{res['ma_status']['ma20_val']:.2f} {currency_sym}），空方控盤，順勢交易者嚴禁逆勢摸底！若持有部位，波段停損價設為 `{res['stop_loss']:.2f} {currency_sym}`。")
+        else:
+            st.markdown(f"""
+            1. **建議進場區間**：**`{close:.2f} {currency_sym}`**（回測 5MA 不破分批布局）。
+            2. **波段防守點位**：**`{res['stop_loss']:.2f} {currency_sym}`**（跌破點位立即退場，絕不凹單）。
+            3. **第一獲利目標**：**`{target_1:.2f} {currency_sym}`**（達成 1.5R 盈虧比，平倉 1/2 入袋並上移防守至成本）。
+            4. **波段獲利目標**：**`{res['target_60d']:.2f} {currency_sym}`**（對齊機構目標價或波段高點擴展區）。
+            """)
 
-    if last_stk['OSC'] > 0 and last_stk['OSC'] > prev_stk['OSC']:
-        tech_score += 8
-        tech_reasons.append("MACD 紅柱放大，攻擊動能足")
-    elif last_stk['OSC'] > 0:
-        tech_score += 4
-        tech_reasons.append("MACD 維持多頭")
+    with st.expander("📝 【決策結論與多空架構】", expanded=False):
+        if is_downtrend:
+            st.error(f"### 🔴 空方架構：現價（{close:.2f} {currency_sym}）跌破月線生命線（{res['ma_status']['ma20_val']:.2f} {currency_sym}），嚴禁追價摸底！")
+            st.write(f"- 當前價位位於月線（20MA）之下，短中期均線蓋頭下壓，等待止跌築底翻揚再行介入。建議防守價位：**{res['stop_loss']:.2f} {currency_sym}**。")
+        elif res['total_score'] >= 75:
+            st.success(f"### 🟢 積極偏多：技術量價動能同步翻多，適合進場 (防守: {res['stop_loss']:.2f} {currency_sym})")
+        elif 60 <= res['total_score'] < 75:
+            st.warning("### 🟡 穩健觀察：指標整理或分歧，僅限輕倉試單")
+        else:
+            st.error("### 🔴 暫緩進場：評價過高或短期均線下壓，空手觀望為上")
 
-    if 50 <= last_stk['RSI14'] <= 70:
-        tech_score += 7
-        tech_reasons.append(f"RSI 處健康攻擊區 ({last_stk['RSI14']:.1f})")
+    with st.expander("⚡ 【開盤即時撮合動態】", expanded=False):
+        st.markdown(f"**當前 K 棒型態：** `{res['k_type']}`")
+        k1, k2 = st.columns(2)
+        k1.metric("開盤跳空幅度", f"{res['gap_pct']:+.2f}%")
+        k2.metric("開盤至今漲跌", f"{res['intraday_pct']:+.2f}%")
+        st.write("---")
+        for d in res['opening_diag']:
+            st.write(f"• {d}")
 
-    analyst_bonus = 0
-    if analyst_data["has_data"]:
-        if "強力" in analyst_data["rec_label"] or "Strong" in analyst_data["rec_label"]:
-            analyst_bonus = 5
-        elif "偏多" in analyst_data["rec_label"] or "Buy" in analyst_data["rec_label"]:
-            analyst_bonus = 3
-        elif "空" in analyst_data["rec_label"] or "Sell" in analyst_data["rec_label"]:
-            analyst_bonus = -5
+    with st.expander("📏 【日 / 月 / 季線 位階矩陣】", expanded=False):
+        st.markdown(f"**均線排列結構：** `{res['ma_alignment']}`")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("日線 (5MA)", f"{res['ma_status']['ma5_val']:.2f}", f"{res['ma_status']['ma5_diff']:+.1f}%")
+        m2.metric("月線 (20MA)", f"{res['ma_status']['ma20_val']:.2f}", f"{res['ma_status']['ma20_diff']:+.1f}%")
+        m3.metric("季線 (60MA)", f"{res['ma_status']['ma60_val']:.2f}", f"{res['ma_status']['ma60_diff']:+.1f}%")
 
-    tech_subtotal = global_score + mkt_score + ma_score + tech_score
-    if fund_data.get("has_data") and fund_data.get("score") is not None:
-        tech_part = tech_subtotal * (60.0 / 85.0)
-        fund_part = fund_data['score'] * 0.70
-        total_score = int(tech_part + fund_part + analyst_bonus)
+    if mode_type == "futures":
+        with st.expander("💎 【期貨契約規格與保證金護城河】", expanded=False):
+            st.markdown(f"**標的商品**：`{spec['name']}` ｜ {spec['desc']}")
+            sp1, sp2 = st.columns(2)
+            sp1.metric("每一跳動點價值", f"NT$ {spec['tick_value']:,} 元")
+            sp2.metric("原始保證金門檻", f"NT$ {spec['initial_margin']:,} 元")
+
+            sp3, sp4 = st.columns(2)
+            sp3.metric("維持保證金警戒線", f"NT$ {spec['maintenance_margin']:,} 元")
+            leverage = (close * spec['tick_value']) / spec['initial_margin'] if spec['initial_margin'] > 0 else 0
+            sp4.metric("實質契約槓桿倍數", f"{leverage:.1f} 倍")
     else:
-        tech_part = tech_subtotal * (95.0 / 85.0)
-        total_score = int(tech_part + analyst_bonus)
-
-    total_score = min(max(total_score, 0), 100)
-
-    ma20_val = safe_float(last_stk['MA20'], close * 0.96)
-    if close >= ma20_val:
-        raw_stop = max(close - 2.0 * atr_val, ma20_val - 0.5 * atr_val)
-        stop_loss = min(raw_stop, close * 0.985)
-        is_breakdown = False
-    else:
-        stop_loss = min(close - 2.0 * atr_val, close * 0.985)
-        is_breakdown = True
-
-    recent_60d_high = safe_float(df_stock['High'].tail(60).max(), close * 1.08)
-    if analyst_data['target_mean'] > close:
-        target_60d = analyst_data['target_mean']
-    elif recent_60d_high > close:
-        target_60d = recent_60d_high
-    else:
-        target_60d = max(close + 2.5 * atr_val, close * 1.08)
-
-    return {
-        "total_score": total_score,
-        "fund_score": fund_data.get('score'),
-        "close": close,
-        "stop_loss": stop_loss,
-        "target_60d": target_60d,
-        "is_breakdown": is_breakdown,
-        "ma_status": ma_status,
-        "ma_alignment": ma_alignment,
-        "gap_pct": gap_pct,
-        "intraday_pct": intraday_pct,
-        "k_type": k_type,
-        "opening_diag": opening_diag,
-        "global_reasons": global_reasons,
-        "mkt_reasons": mkt_reasons,
-        "tech_reasons": tech_reasons,
-        "fund_data": fund_data,
-        "analyst_data": analyst_data,
-        "inst_suite": inst_suite,
-        "rel_alpha_20d": rel_alpha_20d,
-        "rel_alpha_60d": rel_alpha_60d,
-        "forex_info": forex_info,
-        "live_info": live_twse,
-        "asset_type": asset_type
-    }
-
-TW_FUTURES_SPECS = {
-    "WTX": {
-        "name": "台指期貨 (大台)",
-        "tick_value": 200,
-        "initial_margin": 250000,
-        "maintenance_margin": 192000,
-        "desc": "全市場主力大額籌碼風向核心，波動點數價值最高"
-    },
-    "MTX": {
-        "name": "小型台指 (小台)",
-        "tick_value": 50,
-        "initial_margin": 62500,
-        "maintenance_margin": 48000,
-        "desc": "散戶與短線波段核心，靈活高流動性"
-    },
-    "WMT": {
-        "name": "微型台指 (微台)",
-        "tick_value": 10,
-        "initial_margin": 12500,
-        "maintenance_margin": 9600,
-        "desc": "小資量化避險首選，精確微調投資組合部位"
-    },
-    "TE": {
-        "name": "電子期貨",
-        "tick_value": 400,
-        "initial_margin": 210000,
-        "maintenance_margin": 161000,
-        "desc": "追蹤半導體與權值電子類股，連動美股費半"
-    },
-    "TF": {
-        "name": "金融期貨",
-        "tick_value": 1000,
-        "initial_margin": 130000,
-        "maintenance_margin": 100000,
-        "desc": "大型金控與壽險資產指標，防禦震盪特性顯著"
-    }
-}
-
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_stock_news(ticker: str):
-    try:
-        t = yf.Ticker(ticker)
-        news_list = t.news
-        if not news_list:
-            return []
-        formatted = []
-        for n in news_list[:6]:
-            content = n.get('content', {}) if isinstance(n.get('content'), dict) else {}
-            title = content.get('title') or n.get('title') or '市場焦點快訊'
-
-            provider_dict = content.get('provider', {}) if isinstance(content.get('provider'), dict) else {}
-            publisher = provider_dict.get('displayName') or n.get('publisher') or '財經即時訊'
-
-            canon_dict = content.get('canonicalUrl', {}) if isinstance(content.get('canonicalUrl'), dict) else {}
-            click_dict = content.get('clickThroughUrl', {}) if isinstance(content.get('clickThroughUrl'), dict) else {}
-            link = canon_dict.get('url') or click_dict.get('url') or n.get('link') or '#'
-
-            pub_ts = safe_float(n.get('providerPublishTime'))
-            pub_date_str = content.get('pubDate', '')
-            if pub_ts > 0:
-                pub_time = datetime.fromtimestamp(pub_ts, tz=TAIPEI_TZ).strftime("%m/%d %H:%M")
-            elif pub_date_str:
-                pub_time = str(pub_date_str)[:16].replace("T", " ")
+        fund_title = "💎 【ETF 專屬體質與配息分析】" if res['fund_data'].get('is_etf') else "💎 【企業基本面體質護城河】"
+        with st.expander(fund_title, expanded=False):
+            f_data = res['fund_data']
+            if not f_data.get("has_data", False):
+                st.warning("⚠️ 該標的未揭露足夠之財報/配息數據，系統已將基本面評分排除，並自動重新權衡動能指標。")
+            elif f_data.get('is_etf'):
+                f1, f2 = st.columns(2)
+                f1.metric("預估年化殖利率", f"{f_data['yield']:.1f}%" if f_data['yield'] is not None else "未揭露")
+                f2.metric("Beta 波動係數", f"{f_data['beta']:.2f}" if f_data['beta'] is not None else "未揭露")
             else:
-                pub_time = "即時"
+                f1, f2 = st.columns(2)
+                f1.metric("ROE 股東權益報酬率", f"{f_data['roe']:.1f}%" if f_data['roe'] is not None else "無數據")
+                f2.metric("營業利益率", f"{f_data['op_margin']:.1f}%" if f_data['op_margin'] is not None else "無數據")
+                f3, f4 = st.columns(2)
+                f3.metric("本益比 (PE)", f"{f_data['pe']:.1f}x" if (f_data['pe'] is not None and f_data['pe'] > 0) else "不適用/虧損")
+                f4.metric("負債比率 (D/E)", f"{f_data['debt_ratio']:.1f}%" if f_data['debt_ratio'] is not None else "無數據")
+            st.write("---")
+            for r in f_data.get('reasons', []):
+                st.write(f"• {r}")
 
-            formatted.append({
-                "title": title,
-                "publisher": publisher,
-                "link": link,
-                "time": pub_time
-            })
-        return formatted
-    except Exception:
-        return []
+    with st.expander("🚪 【階梯式分階出場 SOP】", expanded=False):
+        st.markdown(f"""
+        - **初始防守停損**：跌破 **`{res['stop_loss']:.2f}` {currency_sym}** 嚴格離場，絕不凹單。
+        - **第一階段目標（減碼 1/2）**：達 **`{target_1:.2f}` {currency_sym}**（1.5R 盈虧比），平倉半數部位入袋並上移防守至成本價（鎖定保本）。
+        - **第二階段目標（波段收割）**：達 **`{res['target_60d']:.2f}` {currency_sym}** 分批落袋。
+        - **移動停利（Trailing Stop）**：其餘部位收盤跌破 5 日線全數獲利了結。
+        """)
 
-MARKET_QUALITY_UNIVERSE = [
-    ("台積電", "2330.TW", "半導體先進製程龍頭"),
-    ("聯發科", "2454.TW", "IC設計領航者"),
-    ("鴻海", "2317.TW", "全球電子代工/AI伺服器"),
-    ("廣達", "2382.TW", "AI伺服器領導大廠"),
-    ("緯穎", "6669.TW", "雲端資料中心伺服器"),
-    ("台達電", "2308.TW", "電源管理與綠能永續"),
-    ("富邦金", "2881.TW", "金控獲利龍頭"),
-    ("國泰金", "2882.TW", "全方位金控旗艦"),
-    ("中信金", "2891.TW", "消費金融與財富管理龍頭"),
-    ("兆豐金", "2886.TW", "官股外匯獲利模範生"),
-    ("長榮", "2603.TW", "全球貨櫃航運龍頭"),
-    ("奇鋐", "3017.TW", "散熱模組領導大廠"),
-    ("雙鴻", "3324.TW", "水冷散熱關鍵大廠"),
-    ("大立光", "3008.TW", "光學鏡頭專利領先者"),
-    ("元大台灣50", "0050.TW", "台股核心藍籌組合")
-]
+    with st.expander(f"💰 【部位風控與建議{unit_name}計算機】", expanded=False):
+        col_cap, col_risk = st.columns(2)
+        with col_cap:
+            if mode_type == "futures":
+                default_cap = int(user_memory.get("capital_tw", 1000000))
+                cap_step = 100000
+                cap_label = "期貨專戶保證金餘額 (NTD)"
+            elif mode_type == "us":
+                default_cap = int(user_memory.get("capital_us", 50000))
+                cap_step = 5000
+                cap_label = "總操作資金 (USD)"
+            else:
+                default_cap = int(user_memory.get("capital_tw", 1000000))
+                cap_step = 100000
+                cap_label = "總操作資金 (NTD)"
+            total_capital = st.number_input(cap_label, value=default_cap, step=cap_step, key=f"calc_cap_{stable_key_suffix}")
+        with col_risk:
+            default_r = float(user_memory.get("risk_pct", 1.0))
+            risk_tolerance = st.slider("單筆最大承受損失比率 (%)", min_value=0.5, max_value=5.0, value=min(max(default_r, 0.5), 5.0), step=0.1, key=f"calc_risk_{stable_key_suffix}")
 
-ETF_UNIVERSE = [
-    ("元大台灣50", "0050.TW", "市值型", "台股市值前50大權值龍頭"),
-    ("富邦台50", "006208.TW", "市值型", "低經理費追蹤台股前50大龍頭"),
-    ("元大高股息", "0056.TW", "高股息", "預測未來高現金殖利率"),
-    ("國泰永續高股息", "00878.TW", "高股息", "ESG+過去3年平均高殖利率/季配"),
-    ("群益台灣精選高息", "00919.TW", "高股息", "宣告股利精準篩選/高配息率"),
-    ("復華台灣科技優息", "00929.TW", "高股息", "全科技股高股息/月配息代表"),
-    ("元大台灣價值高息", "00940.TW", "高股息", "巴菲特價值投資/自由現金流"),
-    ("統一FANG+", "00757.TW", "海外科技", "美國科技巨頭/高成長高動能"),
-    ("國泰費城半導體", "00830.TW", "海外半導體", "全球半導體硬體/AI上游核心"),
-    ("富邦NASDAQ", "00662.TW", "海外美股", "追蹤美國那斯達克100科技成長"),
-    ("元大美債20年", "00679B.TWO", "債券避險", "長天期美債/降息受惠"),
-    ("國泰20年美債", "00687B.TWO", "債券避險", "長天期美債/穩定債息")
-]
+        max_risk_dollar = total_capital * (risk_tolerance / 100.0)
 
-EARNINGS_CALLS = [
-    {"公司": "台積電 (2330)", "重要性": "⭐⭐⭐⭐⭐", "期間": "每季第 1 個月中旬 (1/4/7/10月)", "重點觀測": "資本支出、CoWoS產能、AI半導體展望、N2量產節奏"},
-    {"公司": "聯發科 (2454)", "重要性": "⭐⭐⭐⭐", "期間": "每季底至次月首週 (1/4/7/10月)", "重點觀測": "天璣旗艦晶片出貨、車用與邊緣AI ASIC設計案營收佔比"},
-    {"公司": "鴻海 (2317)", "重要性": "⭐⭐⭐⭐", "期間": "每季中旬 (3/5/8/11月)", "重點觀測": "GB200/NVL72 伺服器量產交期、電動車與毛利率"},
-    {"公司": "廣達 (2382)", "重要性": "⭐⭐⭐⭐", "期間": "每季中旬 (3/5/8/11月)", "重點觀測": "AI伺服器機櫃出貨比重、車用電子獲利動能"},
-    {"公司": "富邦金 (2881)", "重要性": "⭐⭐⭐", "期間": "每季下旬 (3/5/8/11月)", "重點觀測": "海外債券投資評價、壽險避險成本與股利配發能力"}
-]
+        if mode_type == "futures":
+            loss_per_unit = risk_unit * spec['tick_value']
+            risk_based_pos = int(max_risk_dollar // loss_per_unit) if loss_per_unit > 0 else 0
+            margin_max_pos = int(total_capital // spec['initial_margin']) if spec['initial_margin'] > 0 else 0
+            suggested_pos = min(risk_based_pos, margin_max_pos)
+        elif mode_type == "us":
+            loss_per_unit = risk_unit * 1.0
+            risk_based_pos = int(max_risk_dollar // loss_per_unit) if loss_per_unit > 0 else 0
+            capital_max_pos = int(total_capital // close) if close > 0 else 0
+            suggested_pos = min(risk_based_pos, capital_max_pos)
+        else:
+            loss_per_unit = risk_unit * 1000.0
+            risk_based_pos = int(max_risk_dollar // loss_per_unit) if loss_per_unit > 0 else 0
+            capital_max_lots = int(total_capital // (close * 1000.0)) if close > 0 else 0
+            suggested_pos = min(risk_based_pos, capital_max_lots)
 
-US_FUT_LIST = [
-    ("微那斯達克期 (NQ)", "NQ=F", "全球科技龍頭風向球"),
-    ("小標普500期 (ES)", "ES=F", "美股大盤流動性與宏觀資產"),
-    ("道瓊期貨 (YM)", "YM=F", "傳統價值龍頭與金融防禦"),
-    ("羅素2000期 (RTY)", "RTY=F", "中小型股景氣復甦動能")
-]
+        potential_reward = max(res['target_60d'] - close, 0)
+        rr_ratio = potential_reward / risk_unit if risk_unit > 0 else 0
+
+        if is_downtrend:
+            st.warning(f"⚠️ **空方弱勢警示**：目前處於跌破月線格局，系統建議進場數量為 **0 {unit_name}**（觀望為宜）。若依個人風控上限計算，最多承受規模為 **{suggested_pos} {unit_name}**。")
+        else:
+            b1, b2 = st.columns(2)
+            b1.metric("單筆最大容許虧損", f"{int(max_risk_dollar):,} 元" if mode_type != "us" else f"{int(max_risk_dollar):,} USD")
+            b2.metric("建議最大進場數量", f"{suggested_pos} {unit_name}", help="同時受限於風險停損額與保證金/現金購買力")
+            b3, b4 = st.columns(2)
+            b3.metric("目標獲利區", f"{res['target_60d']:.1f} {currency_sym}")
+            b4.metric("預期盈虧比 (R/R)", f"{rr_ratio:.2f} : 1")
+
+    with st.expander(f"📊 【過去 1 年{unit_name}策略回測數據 (無前視偏誤)】", expanded=False):
+        bt = backtest_strategy(df_asset, market_type=mode_type)
+        if bt:
+            bt1, bt2 = st.columns(2)
+            bt1.metric("近 1 年訊號次數", f"{bt['count']} 次")
+            bt2.metric("持有 5 日勝率", f"{bt['win_rate']:.1f}%")
+            if mode_type == "futures":
+                fee_note = "已扣除期指交易稅與點數滑價摩擦成本"
+            elif mode_type == "us":
+                fee_note = "已扣除 0.1% 美股摩擦成本"
+            else:
+                fee_note = "已扣除 0.45% 台股稅費"
+            bt3, bt4 = st.columns(2)
+            bt3.metric("平均淨報酬率", f"{bt['avg_return']:+.2f}%", help=fee_note)
+            bt4.metric("真實最大回撤 (MDD)", f"{bt['mdd']:.2f}%", help="連續權益曲線之最大峰谷回撤")
+            st.caption(f"📌 單部位循序進出（持倉中不重複進場）、單次最差交易：`{bt['worst_loss']:.2f}%`")
+        else:
+            st.write("該標的歷史數據樣本不足以計算有效回測。")
+
+    with st.expander("📈 【近 60 日均線 (5/20/60MA) 波段走勢圖】", expanded=False):
+        valid_cols = ['Close']
+        for c in ['MA5', 'MA20', 'MA60']:
+            if c in df_asset.columns and df_asset[c].notna().sum() > 5:
+                valid_cols.append(c)
+        chart_data = df_asset[valid_cols].dropna().tail(60)
+        st.line_chart(chart_data)
 
 # ----------------- 全域頂層初始化與數據載入 (嚴格位於定義後) -----------------
 bench_dict = preload_global_benchmarks()
