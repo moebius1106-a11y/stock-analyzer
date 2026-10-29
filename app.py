@@ -525,6 +525,32 @@ def safe_float(val, default=0.0):
     except (ValueError, TypeError, IndexError, OverflowError):
         return default
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_vix_percentile():
+    """抓取 ^VIX 過去 252 個交易日計算歷史百分位 (Percentile)"""
+    try:
+        obj = yf.Ticker("^VIX")
+        df_vix = obj.history(period="1y")
+        if df_vix is not None and not df_vix.empty:
+            if isinstance(df_vix.columns, pd.MultiIndex):
+                df_vix.columns = df_vix.columns.get_level_values(0)
+            closes = df_vix['Close'].dropna()
+            if len(closes) > 20:
+                curr_vix = float(closes.iloc[-1])
+                pct = (closes < curr_vix).mean() * 100.0
+                ma20_vix = float(closes.rolling(20, min_periods=5).mean().iloc[-1])
+                return {
+                    "has_data": True,
+                    "vix_price": curr_vix,
+                    "vix_pct": pct,
+                    "vix_ma20": ma20_vix,
+                    "status": "🟢 市場平穩無恐慌" if curr_vix < 20 else ("🟡 波動升溫警戒" if curr_vix < 30 else "🔴 市場高度恐慌崩盤區")
+                }
+    except Exception:
+        pass
+    return {"has_data": False, "vix_price": 0.0, "vix_pct": 0.0, "vix_ma20": 0.0, "status": "暫無數據"}
+
 def normalize_ticker(ticker: str):
     t = ticker.strip().upper()
     if t.endswith("=F") or t in ("WTX", "MTX", "WMT", "TE", "TF"):
@@ -2495,6 +2521,73 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         else:
             st.error("### 🔴 暫緩進場：評價過高或短期均線下壓，空手觀望為上")
 
+
+    # ★ 十大技術指標 Check-list 計分儀表板
+    with st.expander("📊 【十大技術指標 Check-list 儀表板】量化多空逐項檢視", expanded=False):
+        st.caption("透過 10 項嚴格量化規則進行多空體質逐項檢核，一眼看懂綜合評分組成：")
+        
+        # 計算各項指標狀態
+        closes_s = df_asset['Close']
+        ma5_s = df_asset['MA5'] if 'MA5' in df_asset.columns else closes_s.rolling(5).mean()
+        ma20_s = df_asset['MA20'] if 'MA20' in df_asset.columns else closes_s.rolling(20).mean()
+        ma60_s = df_asset['MA60'] if 'MA60' in df_asset.columns else closes_s.rolling(60).mean()
+        rsi_s = df_asset['RSI14'] if 'RSI14' in df_asset.columns else pd.Series([50]*len(df_asset))
+        osc_s = df_asset['OSC'] if 'OSC' in df_asset.columns else pd.Series([0]*len(df_asset))
+        vol_s = df_asset['Volume'] if 'Volume' in df_asset.columns else pd.Series([0]*len(df_asset))
+        vol_ma5_s = df_asset['Vol_MA5'] if 'Vol_MA5' in df_asset.columns else vol_s.rolling(5).mean()
+        
+        c_val = safe_float(closes_s.iloc[-1])
+        m5_v = safe_float(ma5_s.iloc[-1], c_val)
+        m20_v = safe_float(ma20_s.iloc[-1], c_val)
+        m60_v = safe_float(ma60_s.iloc[-1], c_val)
+        rsi_v = safe_float(rsi_s.iloc[-1], 50.0)
+        osc_v = safe_float(osc_s.iloc[-1], 0.0)
+        vol_v = safe_float(vol_s.iloc[-1], 0.0)
+        vol_m5_v = safe_float(vol_ma5_s.iloc[-1], 1.0)
+        
+        # 1. 均線排列
+        chk_ma_align = c_val > m5_v > m20_v > m60_v
+        # 2. 月線生命線
+        chk_ma20 = c_val > m20_v
+        # 3. 季線多頭
+        chk_ma60 = m20_v > m60_v
+        # 4. 成交量能爆量
+        chk_vol = (vol_v / (vol_m5_v + 1e-9)) >= 1.2
+        # 5. MACD 多頭攻擊
+        chk_macd = osc_v > 0 and (len(osc_s) < 2 or osc_v > safe_float(osc_s.iloc[-2]))
+        # 6. RSI 動能區間
+        chk_rsi = 50 <= rsi_v <= 70
+        # 7. 價格高於開盤價
+        o_val = safe_float(df_asset.iloc[-1].get('Open'), c_val)
+        chk_k = c_val >= o_val
+        # 8. 波動率防守 (ATR 合理)
+        atr_v = safe_float(df_asset.iloc[-1].get('ATR14'), c_val * 0.02)
+        chk_atr = (atr_v / c_val) < 0.04
+        # 9. 綜合評分門檻
+        chk_score = res.get('total_score', 0) >= 70
+        # 10. 相對大盤強度
+        chk_alpha = res.get('rel_alpha_20d', 0.0) >= 0.0
+        
+        check_items = [
+            ("1. 均線完美多頭排列 (P>5MA>20MA>60MA)", chk_ma_align, "+15分"),
+            ("2. 站穩月線生命線 (Price > 20MA)", chk_ma20, "+12分"),
+            ("3. 中長線季線多頭架構 (20MA > 60MA)", chk_ma60, "+10分"),
+            ("4. 盤中帶量攻擊 (成交量 >= 1.2x 5日均量)", chk_vol, "+10分"),
+            ("5. MACD 動能紅柱放大 (OSC > 0 且擴增)", chk_macd, "+10分"),
+            ("6. RSI 動能指標處健康區間 (50 ~ 70)", chk_rsi, "+8分"),
+            ("7. 實體 K 棒開低走高或收紅 (Close >= Open)", chk_k, "+5分"),
+            ("8. 波動率 ATR 風控適度 (ATR/Price < 4%)", chk_atr, "+5分"),
+            ("9. 總合量化決策評分達標 (Score >= 70分)", chk_score, "+15分"),
+            ("10. 近 20 日相對大盤超額報酬 (Alpha >= 0%)", chk_alpha, "+10分"),
+        ]
+        
+        passed_count = sum(1 for _, passed, _ in check_items if passed)
+        st.markdown(f"**💡 檢核通過項目：`{passed_count} / 10 項`**（綜合評分：`{res.get('total_score', 0)} 分`）")
+        
+        for desc, passed, score_val in check_items:
+            icon = "🟢 符合" if passed else "⚪ 未符"
+            st.markdown(f"- `{icon}` **{desc}**（權重：{score_val}）")
+
     with st.expander("⚡ 【開盤即時撮合動態】", expanded=False):
         st.markdown(f"**當前 K 棒型態：** `{res['k_type']}`")
         k1, k2 = st.columns(2)
@@ -3639,7 +3732,22 @@ elif st.session_state.main_mode == "forex":
     st.caption(f"• 日圓平倉風險：{fx_info['jpy_risk']}")
 
     st.write("---")
-    st.markdown("### 📈 美元兌新台幣走勢與月線 (20MA)")
+
+    # 🌟 VIX 252 日歷史百分位恐慌溫度計
+    st.write("---")
+    st.markdown("### ⚠️ VIX 恐慌指數 ＆ 252 日歷史百分位儀表板")
+    vix_info = fetch_vix_percentile()
+    if vix_info["has_data"]:
+        v_c1, v_c2, v_c3 = st.columns(3)
+        v_c1.metric("VIX 即時恐慌指數", f"{vix_info['vix_price']:.2f}", vix_info["status"])
+        v_c2.metric("252 日歷史百分位 (Percentile)", f"{vix_info['vix_pct']:.1f}%", "極端恐慌區" if vix_info['vix_pct'] > 80 else ("偏高警戒" if vix_info['vix_pct'] > 60 else "常態平穩"))
+        v_c3.metric("20日均價 (MA20)", f"{vix_info['vix_ma20']:.2f}")
+        st.caption("📌 **VIX 百分位解讀**：若百分位高於 80%，代表市場波動極度劇烈、避險情緒高漲；若低於 30%，通常代表市場流動性佳、風險偏好穩定。")
+    else:
+        st.info("💡 目前暫時無法取得 ^VIX 歷史行情數據。")
+
+
+        st.markdown("### 📈 美元兌新台幣走勢與月線 (20MA)")
     df_usdtwd = fetch_and_calc("USDTWD=X")
     if df_usdtwd is None:
         df_usdtwd = fetch_and_calc("TWD=X")
