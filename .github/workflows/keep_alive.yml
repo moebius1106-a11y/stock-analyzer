@@ -10,7 +10,48 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Streamlit App
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Playwright
         run: |
-          curl -s -L "https://stock-analyzer-iapxysxpvkk5veomzu4vcu.streamlit.app/" > /dev/null
-          echo "Ping successful at $(date)"
+          npm init -y
+          npm install playwright
+          npx playwright install-deps chromium
+          npx playwright install chromium
+
+      - name: Visit and Wake Up Streamlit App
+        run: |
+          node -e "
+            const { chromium } = require('playwright');
+            (async () => {
+              console.log('正在啟動無頭瀏覽器...');
+              const browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage();
+              const APP_URL = 'https://stock-analyzer-iapxysxpvkk5veomzu4vcu.streamlit.app/';
+              
+              console.log('連線至：' + APP_URL);
+              try {
+                await page.goto(APP_URL, { waitUntil: 'networkidle', timeout: 90000 });
+                console.log('網頁載入完成，WebSocket 連線已建立');
+                
+                // 若偵測到休眠喚醒按鈕，自動點擊喚醒
+                const wakeButton = page.locator('button:has-text(\"Yes, get this app back up\")');
+                if (await wakeButton.isVisible()) {
+                  console.log('偵測到休眠喚醒按鈕，點擊喚醒中...');
+                  await wakeButton.click();
+                  await page.waitForTimeout(15000);
+                }
+                
+                // 維持連線 10 秒以向伺服器註冊活躍信號
+                await page.waitForTimeout(10000);
+                console.log('保活任務完成！');
+              } catch (err) {
+                console.log('執行紀錄：', err.message);
+              } finally {
+                await browser.close();
+              }
+            })();
+          "
