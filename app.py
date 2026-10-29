@@ -6,6 +6,8 @@ import altair as alt
 import requests
 import xml.etree.ElementTree as ET
 import math
+import csv
+import logging
 import json
 import os
 import time
@@ -292,6 +294,46 @@ def get_default_settings():
         "last_active": datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M")
     }
 
+def validate_and_sanitize_settings(data, default_s=None):
+    if default_s is None:
+        default_s = get_default_settings()
+    if not isinstance(data, dict):
+        return default_s.copy()
+    sanitized = {}
+    
+    val_tw = safe_float(data.get("capital_tw"), default=default_s["capital_tw"])
+    sanitized["capital_tw"] = max(min(val_tw, 1_000_000_000.0), 10_000.0)
+    
+    val_us = safe_float(data.get("capital_us"), default=default_s["capital_us"])
+    sanitized["capital_us"] = max(min(val_us, 100_000_000.0), 1_000.0)
+    
+    val_fut = safe_float(data.get("capital_fut"), default=default_s["capital_fut"])
+    sanitized["capital_fut"] = max(min(val_fut, 1_000_000_000.0), 10_000.0)
+    
+    val_risk = safe_float(data.get("risk_pct"), default=default_s["risk_pct"])
+    sanitized["risk_pct"] = max(min(val_risk, 10.0), 0.1)
+    
+    val_disc = safe_float(data.get("daytrade_fee_discount"), default=default_s["daytrade_fee_discount"])
+    sanitized["daytrade_fee_discount"] = max(min(val_disc, 1.0), 0.10)
+    
+    sanitized["personal_note"] = str(data.get("personal_note", ""))[:500]
+    
+    for list_key in ["tw_favorites", "tw_recent", "us_favorites", "us_recent"]:
+        raw_list = data.get(list_key, default_s[list_key])
+        if isinstance(raw_list, list):
+            clean_list = []
+            for item in raw_list:
+                s_item = str(item).strip().upper()
+                if 1 <= len(s_item) <= 15 and re.match(r"^[A-Z0-9\.\^\=]+$", s_item):
+                    if s_item not in clean_list:
+                        clean_list.append(s_item)
+            sanitized[list_key] = clean_list[:20]
+        else:
+            sanitized[list_key] = default_s[list_key].copy()
+            
+    sanitized["last_active"] = str(data.get("last_active", datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M")))[:25]
+    return sanitized
+
 def get_user_data():
     if "user_data" not in st.session_state:
         default_s = get_default_settings()
@@ -299,15 +341,11 @@ def get_user_data():
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
-                    if isinstance(loaded, dict):
-                        for k, v in default_s.items():
-                            if k not in loaded:
-                                loaded[k] = v
-                        st.session_state.user_data = loaded
-                        return st.session_state.user_data
-            except Exception:
-                pass
-        st.session_state.user_data = default_s
+                    st.session_state.user_data = validate_and_sanitize_settings(loaded, default_s)
+                    return st.session_state.user_data
+            except Exception as e:
+                logging.warning(f"讀取使用者設定檔異常: {e}")
+        st.session_state.user_data = default_s.copy()
     return st.session_state.user_data
 
 def save_user_data():
@@ -783,12 +821,13 @@ def fetch_intraday_series(ticker: str):
         df_plot['Diff'] = df_plot['Close'] - y_close
         df_plot['Pct'] = (df_plot['Diff'] / (y_close + 1e-9)) * 100.0
         df_plot['BarColor'] = np.where(df_plot['Close'] >= df_plot['Open'], '漲(紅)', '跌(綠)')
-        df_plot['VolLots'] = np.where(df_plot['Volume'] > 10000, df_plot['Volume'] / 1000.0, df_plot['Volume'])
+        is_tw_asset = (".TW" in ticker.upper() or ".TWO" in ticker.upper() or ticker.upper() in ("^TWII", "WTX=F"))
+        df_plot['VolLots'] = (df_plot['Volume'] / 1000.0) if is_tw_asset else df_plot['Volume']
 
         tp = (df_plot['High'] + df_plot['Low'] + df_plot['Close']) / 3.0
         cum_tp_vol = (tp * df_plot['Volume']).cumsum()
         cum_vol = df_plot['Volume'].cumsum()
-        df_plot['VWAP'] = np.where(cum_vol > 0, cum_tp_vol / cum_vol, df_plot['Close'])
+        df_plot['VWAP'] = np.where(cum_vol > 0, cum_tp_vol / (cum_vol + 1e-9), df_plot['Close'])
 
         return df_plot.reset_index(drop=True), y_close
     except Exception:
@@ -825,7 +864,43 @@ def calc_cdp_levels(df_daily):
 def calc_orb_levels(df_intra):
     if df_intra is None or df_intra.empty:
         return None
-    orb_window = df_intra.head(15)
+    
+    # 針對台股正規盤檢驗 09:00 ~ 09:15 區間完整性
+    if 'TimeStr' in df_intra.columns:
+        regular_bars = df_intra[df_intra['TimeStr'] >= '09:00']
+        if regular_bars.empty:
+            curr_p = safe_float(df_intra.iloc[-1]['Close'])
+            curr_vwap = safe_float(df_intra.iloc[-1].get('VWAP', curr_p))
+            return {
+                "orb_high": curr_p, "orb_low": curr_p,
+                "curr_vwap": curr_vwap,
+                "status_label": "⚪ 尚未進入正式交易時段 (09:00前)，暫不建立 ORB",
+                "bias": "觀察"
+            }
+        orb_window = regular_bars[regular_bars['TimeStr'] <= '09:15']
+        if len(orb_window) < 3:
+            curr_p = safe_float(df_intra.iloc[-1]['Close'])
+            curr_vwap = safe_float(df_intra.iloc[-1].get('VWAP', curr_p))
+            return {
+                "orb_high": safe_float(orb_window['High'].max(), curr_p),
+                "orb_low": safe_float(orb_window['Low'].min(), curr_p),
+                "curr_vwap": curr_vwap,
+                "status_label": "⏳ 開盤 15 分 K 區間建立中 (09:00~09:15 樣本累積中)",
+                "bias": "觀察"
+            }
+    else:
+        if len(df_intra) < 15:
+            curr_p = safe_float(df_intra.iloc[-1]['Close'])
+            curr_vwap = safe_float(df_intra.iloc[-1].get('VWAP', curr_p))
+            return {
+                "orb_high": safe_float(df_intra['High'].max()),
+                "orb_low": safe_float(df_intra['Low'].min()),
+                "curr_vwap": curr_vwap,
+                "status_label": f"⏳ 開盤 15 分 K 建立中 (目前累積 {len(df_intra)} 根，暫不觸發突破信號)",
+                "bias": "觀察"
+            }
+        orb_window = df_intra.iloc[:15]
+
     orb_high = safe_float(orb_window['High'].max())
     orb_low = safe_float(orb_window['Low'].min())
     if orb_high <= 0 or orb_low <= 0:
@@ -958,15 +1033,15 @@ def fetch_bot_forex():
     try:
         r = requests.get(url, headers=headers, timeout=3.0)
         if r.status_code == 200:
-            lines = r.text.splitlines()
-            for line in lines:
-                parts = line.split(",")
-                if len(parts) >= 5 and parts[0].strip() == "USD":
-                    val = safe_float(parts[12]) if len(parts) >= 13 else 0.0
-                    if val <= 0 and len(parts) >= 5:
-                        val = safe_float(parts[4])
-                    if val <= 0 and len(parts) >= 4:
-                        val = safe_float(parts[3])
+            reader = csv.reader(r.text.splitlines())
+            for row in reader:
+                if len(row) >= 5 and row[0].strip() == "USD":
+                    # 即時本行賣出 (索引 12) 或 現金賣出 (索引 4/3)
+                    val = safe_float(row[12]) if len(row) >= 13 else 0.0
+                    if val <= 0 and len(row) >= 5:
+                        val = safe_float(row[4])
+                    if val <= 0 and len(row) >= 4:
+                        val = safe_float(row[3])
                     if val > 0:
                         return {"usd_twd": val, "source": "臺灣銀行官方牌告", "is_real": True}
     except Exception:
@@ -1276,11 +1351,12 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
         df['Vol_MA5'] = df['Volume'].rolling(5, min_periods=1).mean()
 
         delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14, min_periods=1).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14, min_periods=1).mean()
-        total_move = gain + loss
-        rs = gain / (loss + 1e-9)
-        df['RSI14'] = np.where(total_move < 1e-6, 50.0, 100.0 - (100.0 / (1.0 + rs)))
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.ewm(alpha=1/14.0, adjust=False, min_periods=14).mean()
+        avg_loss = loss.ewm(alpha=1/14.0, adjust=False, min_periods=14).mean()
+        rs = avg_gain / (avg_loss + 1e-9)
+        df['RSI14'] = (100.0 - (100.0 / (1.0 + rs))).fillna(50.0)
 
         ema12 = df['Close'].ewm(span=12, adjust=False).mean()
         ema26 = df['Close'].ewm(span=26, adjust=False).mean()
@@ -1292,7 +1368,7 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
         hc = (df['High'] - df['Close'].shift()).abs()
         lc = (df['Low'] - df['Close'].shift()).abs()
         tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-        df['ATR14'] = tr.rolling(14, min_periods=1).mean().bfill()
+        df['ATR14'] = tr.rolling(14, min_periods=1).mean().ffill()
 
         return df.copy()
     except Exception:
@@ -1354,8 +1430,7 @@ def fetch_fundamentals(ticker: str):
                     fund_score += 8
                     reasons.append(f"Beta 係數 {beta_val:.2f}，波動幅度相對較大")
 
-            fund_score += 10
-            reasons.append("成分股已實施一籃子分散風險")
+            reasons.append("屬一籃子分散配置標的 (註：未評估費用率、折溢價與配息來源)")
 
             return {
                 "has_data": True,
@@ -1429,12 +1504,12 @@ def fetch_fundamentals(ticker: str):
             if de_val is not None:
                 if de_val <= 80:
                     fund_score += 10
-                    reasons.append(f"負債比率健康 ({de_val:.1f}%)，財務防禦佳")
+                    reasons.append(f"負債權益比 (D/E) 適度 ({de_val:.1f}%)，財務結構穩健 (註：各產業基準差異大)")
                 elif de_val <= 150:
                     fund_score += 6
-                    reasons.append(f"負債比率適中 ({de_val:.1f}%)")
+                    reasons.append(f"負債權益比 (D/E) 常態 ({de_val:.1f}%) (註：各產業基準差異大)")
                 else:
-                    reasons.append(f"負債比率偏高 ({de_val:.1f}%)")
+                    reasons.append(f"負債權益比 (D/E) 偏高 ({de_val:.1f}%) (註：各產業基準差異大)")
 
             return {
                 "has_data": True,
@@ -1825,38 +1900,48 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
 TW_FUTURES_SPECS = {
     "WTX": {
         "name": "台指期貨 (大台)",
+        "point_value": 200,
+        "tick_size": 1.0,
         "tick_value": 200,
         "initial_margin": 250000,
         "maintenance_margin": 192000,
-        "desc": "全市場主力大額籌碼風向核心，波動點數價值最高"
+        "desc": "全市場主力大額籌碼風向核心，每點 200 元"
     },
     "MTX": {
         "name": "小型台指 (小台)",
+        "point_value": 50,
+        "tick_size": 1.0,
         "tick_value": 50,
         "initial_margin": 62500,
         "maintenance_margin": 48000,
-        "desc": "散戶與短線波段核心，靈活高流動性"
+        "desc": "散戶與短線波段核心，每點 50 元"
     },
     "WMT": {
         "name": "微型台指 (微台)",
+        "point_value": 10,
+        "tick_size": 1.0,
         "tick_value": 10,
         "initial_margin": 12500,
         "maintenance_margin": 9600,
-        "desc": "小資量化避險首選，精確微調投資組合部位"
+        "desc": "小資量化避險首選，每點 10 元"
     },
     "TE": {
         "name": "電子期貨",
-        "tick_value": 400,
+        "point_value": 400,
+        "tick_size": 0.05,
+        "tick_value": 20,
         "initial_margin": 210000,
         "maintenance_margin": 161000,
-        "desc": "追蹤半導體與權值電子類股，連動美股費半"
+        "desc": "追蹤電子類股，每點 400 元 (每跳 0.05 點 = 20 元)"
     },
     "TF": {
         "name": "金融期貨",
-        "tick_value": 1000,
+        "point_value": 1000,
+        "tick_size": 0.2,
+        "tick_value": 200,
         "initial_margin": 130000,
         "maintenance_margin": 100000,
-        "desc": "大型金控與壽險資產指標，防禦震盪特性顯著"
+        "desc": "大型金控資產指標，每點 1000 元 (每跳 0.2 點 = 200 元)"
     }
 }
 
@@ -2076,8 +2161,8 @@ def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
             """, unsafe_allow_html=True)
 
             if mkt["summary_text"]:
-                with st.expander("📖 查看企業核心業務與全球競爭護城河簡介", expanded=False):
-                    st.write(mkt["summary_text"])
+                st.markdown("##### 📖 企業核心業務與全球競爭護城河簡介")
+                st.info(mkt["summary_text"])
 
         with tab_export:
             st.markdown("#### 📥 完整機構級四維度投研報告（可直接複製或下載存檔）")
@@ -2116,14 +2201,18 @@ def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
             )
 
 # ================= 模組共用渲染器 =================
-def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallback_warning=None, ticker_raw=None):
+def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallback_warning=None, ticker_raw=None, is_spot_fallback=False):
     is_downtrend = res.get('is_breakdown', False) or (res['close'] < res['ma_status']['ma20_val'])
     close = safe_float(res.get('close', 0.0))
     if close <= 0:
         close = 1.0
 
-    risk_unit = max(close - safe_float(res.get('stop_loss', 0.0)), close * 0.015)
-    target_1 = close + (1.5 * risk_unit)
+    raw_stop = safe_float(res.get('stop_loss', 0.0))
+    if close > 0 and 0 < raw_stop < close:
+        risk_unit = close - raw_stop
+    else:
+        risk_unit = max(close * 0.015, 1.0)
+    target_1 = (close + (1.5 * risk_unit)) if (not is_downtrend and not is_spot_fallback) else None
     an_data = res['analyst_data']
     stable_key_suffix = f"{mode_type}_{ticker_raw or 'default'}"
 
@@ -2343,13 +2432,16 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
 
         st.write("---")
         st.markdown(f"### 📋 【精確{unit_name}下單執行卡】")
-        if is_downtrend:
-            st.error(f"🚫 **當前禁止做多**：現價（{close:.2f} {currency_sym}）已跌破月線生命線（{res['ma_status']['ma20_val']:.2f} {currency_sym}），空方控盤，順勢交易者嚴禁逆勢摸底！若持有部位，波段停損價設為 `{res['stop_loss']:.2f} {currency_sym}`。")
+        if is_spot_fallback:
+            st.error("🚨 **【現貨參考模式・停用期貨下單建議】**：外部行情庫暫無此期貨即時撮合數據，目前點位走勢引自加權指數現貨。為防範實盤風控風險，**已停用本卡片之期貨下單點位、停損停利試算與建議口數**！請俟取得真實期貨撮合後再行下單。")
+        elif is_downtrend:
+            st.error(f"🚫 **當前禁止做多**：現價（{close:.2f} {currency_sym}）已跌破月線生命線（{res['ma_status']['ma20_val']:.2f} {currency_sym}），空方控盤，順勢交易者嚴禁逆勢摸底！若持有部位，建議退場防守價設為 `{res['stop_loss']:.2f} {currency_sym}`。")
         else:
+            t1_str = f"{target_1:.2f}" if target_1 is not None else "--"
             st.markdown(f"""
             1. **建議進場區間**：**`{close:.2f} {currency_sym}`**（回測 5MA 不破分批布局）。
             2. **波段防守點位**：**`{res['stop_loss']:.2f} {currency_sym}`**（跌破點位立即退場，絕不凹單）。
-            3. **第一獲利目標**：**`{target_1:.2f} {currency_sym}`**（達成 1.5R 盈虧比，平倉 1/2 入袋並上移防守至成本）。
+            3. **第一獲利目標**：**`{t1_str} {currency_sym}`**（達成 1.5R 盈虧比，平倉 1/2 入袋並上移防守至成本）。
             4. **波段獲利目標**：**`{res['target_60d']:.2f} {currency_sym}`**（對齊機構目標價或波段高點擴展區）。
             """)
 
@@ -2389,7 +2481,9 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
 
             sp3, sp4 = st.columns(2)
             sp3.metric("維持保證金警戒線", f"NT$ {spec['maintenance_margin']:,} 元")
-            leverage = (close * spec['tick_value']) / spec['initial_margin'] if spec['initial_margin'] > 0 else 0
+            pt_val = spec.get('point_value', spec.get('tick_value', 200))
+            contract_nominal_val = close * pt_val
+            leverage = (contract_nominal_val / spec['initial_margin']) if spec['initial_margin'] > 0 else 0.0
             sp4.metric("實質契約槓桿倍數", f"{leverage:.1f} 倍")
     else:
         fund_title = "💎 【ETF 專屬體質與配息分析】" if res['fund_data'].get('is_etf') else "💎 【企業基本面體質護城河】"
@@ -2407,18 +2501,24 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
                 f2.metric("營業利益率", f"{f_data['op_margin']:.1f}%" if f_data['op_margin'] is not None else "無數據")
                 f3, f4 = st.columns(2)
                 f3.metric("本益比 (PE)", f"{f_data['pe']:.1f}x" if (f_data['pe'] is not None and f_data['pe'] > 0) else "不適用/虧損")
-                f4.metric("負債比率 (D/E)", f"{f_data['debt_ratio']:.1f}%" if f_data['debt_ratio'] is not None else "無數據")
+                f4.metric("負債權益比 (D/E)", f"{f_data['debt_ratio']:.1f}%" if f_data['debt_ratio'] is not None else "無數據", help="負債／股東權益比率 (Debt-to-Equity Ratio)，各產業資本結構差異大")
             st.write("---")
             for r in f_data.get('reasons', []):
                 st.write(f"• {r}")
 
     with st.expander("🚪 【階梯式分階出場 SOP】", expanded=False):
-        st.markdown(f"""
-        - **初始防守停損**：跌破 **`{res['stop_loss']:.2f}` {currency_sym}** 嚴格離場，絕不凹單。
-        - **第一階段目標（減碼 1/2）**：達 **`{target_1:.2f}` {currency_sym}**（1.5R 盈虧比），平倉半數部位入袋並上移防守至成本價（鎖定保本）。
-        - **第二階段目標（波段收割）**：達 **`{res['target_60d']:.2f}` {currency_sym}** 分批落袋。
-        - **移動停利（Trailing Stop）**：其餘部位收盤跌破 5 日線全數獲利了結。
-        """)
+        if is_spot_fallback:
+            st.info("⚪ 目前處於現貨參考模式，請俟取得真實期貨合約撮合點位後再行規劃進出場目標。")
+        elif is_downtrend:
+            st.warning(f"🚫 空方弱勢架構：現價已跌破月線（20MA），系統暫停提供多單目標，嚴禁逆勢摸底做多！持有部位請嚴格以防守點位 **`{res['stop_loss']:.2f}` {currency_sym}** 退場止血。")
+        else:
+            t1_val_str = f"{target_1:.2f}" if target_1 is not None else "--"
+            st.markdown(f"""
+            - **初始防守停損**：跌破 **`{res['stop_loss']:.2f}` {currency_sym}** 嚴格離場，絕不凹單。
+            - **第一階段目標（減碼 1/2）**：達 **`{t1_val_str}` {currency_sym}**（1.5R 盈虧比），平倉半數部位入袋並上移防守至成本價（鎖定保本）。
+            - **第二階段目標（波段收割）**：達 **`{res['target_60d']:.2f}` {currency_sym}** 分批落袋。
+            - **移動停利（Trailing Stop）**：其餘部位收盤跌破 5 日線全數獲利了結。
+            """)
 
     with st.expander(f"💰 【部位風控與建議{unit_name}計算機】", expanded=False):
         col_cap, col_risk = st.columns(2)
@@ -2443,7 +2543,8 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         max_risk_dollar = total_capital * (risk_tolerance / 100.0)
 
         if mode_type == "futures":
-            loss_per_unit = risk_unit * spec['tick_value']
+            pt_val = spec.get('point_value', spec.get('tick_value', 200))
+            loss_per_unit = risk_unit * pt_val
             risk_based_pos = int(max_risk_dollar // loss_per_unit) if loss_per_unit > 0 else 0
             margin_max_pos = int(total_capital // spec['initial_margin']) if spec['initial_margin'] > 0 else 0
             suggested_pos = min(risk_based_pos, margin_max_pos)
@@ -2461,8 +2562,16 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         potential_reward = max(res['target_60d'] - close, 0)
         rr_ratio = potential_reward / risk_unit if risk_unit > 0 else 0
 
-        if is_downtrend:
+        if is_spot_fallback:
+            st.warning("⚪ **現貨參考模式**：由於未能取得真實期貨合約撮合報價，已停用自動可下口數試算與保證金槓桿建議。")
+        elif is_downtrend:
             st.warning(f"⚠️ **空方弱勢警示**：目前處於跌破月線格局，系統建議進場數量為 **0 {unit_name}**（觀望為宜）。若依個人風控上限計算，最多承受規模為 **{suggested_pos} {unit_name}**。")
+            b1, b2 = st.columns(2)
+            b1.metric("單筆最大容許虧損", f"{int(max_risk_dollar):,} 元" if mode_type != "us" else f"{int(max_risk_dollar):,} USD")
+            b2.metric("建議多單進場數量", f"0 {unit_name}")
+            b3, b4 = st.columns(2)
+            b3.metric("多方目標獲利區", "--")
+            b4.metric("多方預期風報比", "--")
         else:
             b1, b2 = st.columns(2)
             b1.metric("單筆最大容許虧損", f"{int(max_risk_dollar):,} 元" if mode_type != "us" else f"{int(max_risk_dollar):,} USD")
@@ -2471,7 +2580,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
             b3.metric("目標獲利區", f"{res['target_60d']:.1f} {currency_sym}")
             b4.metric("預期盈虧比 (R/R)", f"{rr_ratio:.2f} : 1")
 
-    with st.expander(f"📊 【過去 1 年{unit_name}策略回測數據 (無前視偏誤)】", expanded=False):
+    with st.expander(f"📊 【過去 1 年{unit_name}策略回測數據 (簡化歷史模擬)】", expanded=False):
         bt = backtest_strategy(df_asset, market_type=mode_type)
         if bt:
             bt1, bt2 = st.columns(2)
@@ -2485,7 +2594,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
                 fee_note = "已扣除 0.45% 台股稅費"
             bt3, bt4 = st.columns(2)
             bt3.metric("平均淨報酬率", f"{bt['avg_return']:+.2f}%", help=fee_note)
-            bt4.metric("真實最大回撤 (MDD)", f"{bt['mdd']:.2f}%", help="連續權益曲線之最大峰谷回撤")
+            bt4.metric("簡化交易回撤 (MDD)", f"{bt['mdd']:.2f}%", help="依固定持有期交易序列計算之最大峰谷回撤，未含逐日持倉估值、盤中滑價與保證金追繳路徑")
             st.caption(f"📌 單部位循序進出（持倉中不重複進場）、單次最差交易：`{bt['worst_loss']:.2f}%`")
         else:
             st.write("該標的歷史數據樣本不足以計算有效回測。")
@@ -2549,13 +2658,16 @@ current_briefing = get_auto_market_briefing(df_market, df_sox, global_forex)
 # ----------------- 頂部導航與功能設置 -----------------
 st.title("📱 股期決策旗艦站 (跨市場機構版)")
 
-with st.expander("⚙️ 個人風控本金、當沖折讓、看盤備忘錄與資料備份", expanded=False):
-    p_c1, p_c2, p_c3 = st.columns(3)
+with st.expander("⚙️ 個人風控本金、當沖折讓與看盤備忘錄", expanded=False):
+    st.caption(f"📌 **本地端設定提示**：目前偏好參數儲存於伺服器本地環境 ({SETTINGS_FILE})。若在雲端多人環境使用，請使用下方備份碼匯入/匯出保存個人專屬設定。")
+    p_c1, p_c2, p_c3, p_c4 = st.columns(4)
     with p_c1:
         u_cap_tw = st.number_input("台股預設本金(NTD)", value=int(user_memory.get("capital_tw", 1000000)), step=100000, key="prof_cap_tw")
     with p_c2:
-        u_cap_us = st.number_input("美股預設本金(USD)", value=int(user_memory.get("capital_us", 50000)), step=5000, key="prof_cap_us")
+        u_cap_fut = st.number_input("期貨預設本金(NTD)", value=int(user_memory.get("capital_fut", 1000000)), step=100000, key="prof_cap_fut")
     with p_c3:
+        u_cap_us = st.number_input("美股預設本金(USD)", value=int(user_memory.get("capital_us", 50000)), step=5000, key="prof_cap_us")
+    with p_c4:
         u_risk = st.number_input("單筆風險(%)", min_value=0.5, max_value=5.0, value=float(user_memory.get("risk_pct", 1.0)), step=0.1, key="prof_risk")
 
     u_disc = st.slider("當沖券商手續費折讓（例如 2.8 折輸入 0.28）", min_value=0.10, max_value=1.00, value=float(user_memory.get("daytrade_fee_discount", 0.28)), step=0.01, key="prof_disc")
@@ -2563,6 +2675,7 @@ with st.expander("⚙️ 個人風控本金、當沖折讓、看盤備忘錄與�
     
     if st.button("💾 儲存本機偏好設定", use_container_width=True, key="btn_save_profile"):
         user_memory["capital_tw"] = u_cap_tw
+        user_memory["capital_fut"] = u_cap_fut
         user_memory["capital_us"] = u_cap_us
         user_memory["risk_pct"] = u_risk
         user_memory["daytrade_fee_discount"] = u_disc
@@ -2570,20 +2683,23 @@ with st.expander("⚙️ 個人風控本金、當沖折讓、看盤備忘錄與�
         save_user_data()
         st.success("已儲存偏好參數！")
 
-    with st.expander("📦 匯出 / 匯入設定備份碼（防雲端休眠重置）", expanded=False):
-        backup_str = json.dumps(user_memory, ensure_ascii=False)
-        st.code(backup_str, language="json")
-        restore_str = st.text_input("貼上備份碼一鍵還原", placeholder='{"tw_favorites": ...}', key="restore_json_in")
-        if st.button("📥 確認還原設定", key="btn_restore_json"):
-            try:
-                restored = json.loads(restore_str)
-                if isinstance(restored, dict):
-                    st.session_state.user_data.update(restored)
-                    save_user_data()
-                    st.success("設定資料已成功還原！")
-                    st.rerun()
-            except Exception:
-                st.error("備份碼格式不正確，請確認複製完整。")
+with st.expander("📦 匯出 / 匯入設定備份碼（防雲端休眠重置）", expanded=False):
+    backup_str = json.dumps(user_memory, ensure_ascii=False)
+    st.code(backup_str, language="json")
+    restore_str = st.text_input("貼上備份碼一鍵還原", placeholder='{"tw_favorites": ...}', key="restore_json_in")
+    if st.button("📥 確認還原設定", key="btn_restore_json"):
+        try:
+            restored = json.loads(restore_str)
+            if isinstance(restored, dict):
+                st.session_state.user_data = validate_and_sanitize_settings(restored)
+                save_user_data()
+                st.success("設定資料已通過完整 Schema 驗證並成功還原！")
+                st.rerun()
+            else:
+                st.error("備份碼非合法的 JSON 物件格式。")
+        except Exception as e:
+            logging.warning(f"還原備份碼解析失敗: {e}")
+            st.error(f"備份碼格式錯誤：{str(e)}")
 
 with st.expander("📘 點此查看【系統現行版本完整功能清單與版本說明】", expanded=False):
     st.markdown("""
@@ -3093,17 +3209,32 @@ elif st.session_state.main_mode == "tw_futures":
 
     clean_key = raw_fut_input.strip().upper().replace("=F", "")
     spec_info = TW_FUTURES_SPECS.get(clean_key, TW_FUTURES_SPECS["WTX"])
+    FUTURES_YAHOO_MAP = {
+        "WTX": "WTX=F",
+        "MTX": "MTX=F",
+        "WMT": "WMT=F",
+        "TE": "TE=F",
+        "TF": "TF=F"
+    }
+    target_fut_ticker = FUTURES_YAHOO_MAP.get(clean_key, f"{clean_key}=F")
 
     if exec_fut_btn or st.session_state.auto_run_fut or st.session_state.analysis_cache_fut is None:
         st.session_state.auto_run_fut = False
         st.session_state.selected_fut_contract = clean_key
-        with st.spinner("連線期貨點位與期顧模型中..."):
-            df_target_fut = fetch_and_calc("WTX=F")
+        with st.spinner(f"連線【{spec_info['name']} ({target_fut_ticker})】行情中..."):
+            df_target_fut = fetch_and_calc(target_fut_ticker)
             fallback_note = None
+            is_spot_fb = False
 
             if df_target_fut is None or df_target_fut.empty:
                 df_target_fut = df_market
-                fallback_note = f"📌 **行情資料來源提示**：外部資料庫未提供此期貨即時報價，走勢與均線位階參考加權指數標的；風控與下單已精確套用【{spec_info['name']}】契約規格（每點 {spec_info['tick_value']} 元、保證金 {spec_info['initial_margin']:,} 元）。"
+                is_spot_fb = True
+                pt_v = spec_info.get('point_value', spec_info.get('tick_value', 200))
+                fallback_note = (
+                    f"🚨 **【行情來源警示・現貨參考模式】**：外部資料庫目前未提供【{spec_info['name']} ({target_fut_ticker})】之獨立即時撮合行情！"
+                    f"走勢圖暫以「加權指數現貨」作為位階參考，**現價與指標均非真實期貨點位**；"
+                    f"為嚴守實盤風控，**已全面停用期貨下單建議、停損停利試算與可開口數**，嚴禁以現貨點位作為期貨實盤委託依據！"
+                )
 
             if df_target_fut is not None:
                 r_fut = analyze_full_stock(
@@ -3117,16 +3248,15 @@ elif st.session_state.main_mode == "tw_futures":
                     asset_type="futures",
                     include_inst_suite=False
                 )
-                st.session_state.analysis_cache_fut = (r_fut, df_target_fut, spec_info, fallback_note, clean_key)
+                st.session_state.analysis_cache_fut = (r_fut, df_target_fut, spec_info, fallback_note, clean_key, is_spot_fb)
             else:
                 st.session_state.analysis_cache_fut = None
-                st.error("暫時無法取得台股指數基準行情，請稍後再試。")
+                st.error(f"暫時無法取得【{spec_info['name']}】或大盤基準行情，請稍後再試。")
 
     if st.session_state.analysis_cache_fut is not None:
-        r_fut, df_fut_obj, spec_obj, fb_msg, fut_k = st.session_state.analysis_cache_fut
-        render_analysis_view(r_fut, df_fut_obj, mode_type="futures", custom_spec=spec_obj, fallback_warning=fb_msg, ticker_raw=fut_k)
+        r_fut, df_fut_obj, spec_obj, fb_msg, fut_k, is_spot_fb = st.session_state.analysis_cache_fut
+        render_analysis_view(r_fut, df_fut_obj, mode_type="futures", custom_spec=spec_obj, fallback_warning=fb_msg, ticker_raw=fut_k, is_spot_fallback=is_spot_fb)
 
-# ================= 模式 4：📈 美股期貨 =================
 elif st.session_state.main_mode == "us_futures":
     st.subheader("📈 美股期貨獨立專區")
     st.caption("四大美指期貨即時動能・微那斯達克 / 微標普 / 道瓊 / 羅素2000")
@@ -3488,7 +3618,7 @@ elif st.session_state.main_mode == "forex":
     else:
         st.write("暫時無法取得匯率走勢。")
 
-# 盤中 30 秒自動刷新控制器
-if auto_refresh:
+# 盤中 30 秒自動刷新控制器 (僅在即時看盤室且使用者主動勾選時觸發，避免阻塞其他診斷分頁)
+if auto_refresh and st.session_state.get("main_mode") == "live_watch":
     time.sleep(30)
     st.rerun()
