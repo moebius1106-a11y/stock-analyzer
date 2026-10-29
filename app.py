@@ -649,6 +649,45 @@ def fetch_twse_realtime(ticker: str):
         pass
     return None
 
+def resolve_tw_ticker(ticker_input: str) -> str:
+    """智慧自動辨識台股上市 (.TW) 或上櫃 (.TWO) 代碼"""
+    clean = str(ticker_input).strip().upper()
+    if not clean:
+        return clean
+    if clean.endswith(".TW") or clean.endswith(".TWO"):
+        return clean
+    if clean.endswith("=F") or clean in ("WTX", "MTX", "WMT", "TE", "TF"):
+        return clean
+
+    # 若為純數字代碼，進行上市/上櫃即時自動偵測與容錯
+    if clean.isdigit():
+        try:
+            # 1. 優先嘗試 TWSE 即時撮合接口偵測市場
+            tse_live = fetch_twse_realtime(f"{clean}.TW")
+            if tse_live and tse_live.get("match_price", 0) > 0:
+                return f"{clean}.TW"
+
+            otc_live = fetch_twse_realtime(f"{clean}.TWO")
+            if otc_live and otc_live.get("match_price", 0) > 0:
+                return f"{clean}.TWO"
+
+            # 2. 若處於非交易時段，使用 Yahoo 歷史行情偵測
+            df_tw = fetch_and_calc(f"{clean}.TW", period="1mo")
+            if df_tw is not None and not df_tw.empty:
+                return f"{clean}.TW"
+
+            df_two = fetch_and_calc(f"{clean}.TWO", period="1mo")
+            if df_two is not None and not df_two.empty:
+                return f"{clean}.TWO"
+        except Exception:
+            pass
+
+        # 若皆未查得，預設以上市為基礎回傳
+        return f"{clean}.TW"
+
+    return clean
+
+
 @st.cache_data(ttl=15, show_spinner=False)
 def fetch_twse_market_dashboard():
     result = {
@@ -2938,9 +2977,7 @@ elif st.session_state.main_mode == "tw_stock":
     st.subheader("🔍 台股全維度深度體檢")
 
     def set_and_jump_tw_ticker(target_code: str):
-        clean_code = target_code.strip().upper()
-        if clean_code.isdigit():
-            clean_code += ".TW"
+        clean_code = resolve_tw_ticker(target_code)
         st.session_state.tw_ticker_field = clean_code
         st.session_state.selected_tw_ticker = clean_code
         st.session_state.analysis_cache_tw = None
@@ -2994,9 +3031,7 @@ elif st.session_state.main_mode == "tw_stock":
         col_m1, col_m2 = st.columns([2.4, 1.6])
         new_fav_in = col_m1.text_input("新增常用代碼", placeholder="例：2603.TW", key="new_tw_fav_in")
         if col_m2.button("➕ 新增至常用", use_container_width=True, key="btn_add_tw_fav"):
-            clean_new_fav = new_fav_in.strip().upper()
-            if clean_new_fav.isdigit():
-                clean_new_fav += ".TW"
+            clean_new_fav = resolve_tw_ticker(new_fav_in)
             if clean_new_fav and clean_new_fav not in user_memory["tw_favorites"]:
                 user_memory["tw_favorites"].append(clean_new_fav)
                 save_user_data()
@@ -3012,9 +3047,7 @@ elif st.session_state.main_mode == "tw_stock":
                 save_user_data()
                 st.rerun()
 
-    cleaned_tw_ticker = raw_tw_input.strip().upper()
-    if cleaned_tw_ticker.isdigit():
-        cleaned_tw_ticker = f"{cleaned_tw_ticker}.TW"
+    cleaned_tw_ticker = resolve_tw_ticker(raw_tw_input)
 
     if exec_clicked or st.session_state.auto_run_tw:
         st.session_state.auto_run_tw = False
@@ -3565,9 +3598,7 @@ elif st.session_state.main_mode == "events":
         news_clicked = st.button("📰 查個股新聞", type="primary", use_container_width=True, key="fetch_news_btn")
 
     if news_clicked:
-        clean_news_t = news_ticker.strip().upper()
-        if clean_news_t.isdigit():
-            clean_news_t += ".TW"
+        clean_news_t = resolve_tw_ticker(news_ticker)
         with st.spinner("連線即時新聞庫檢索中..."):
             news_items = fetch_stock_news(clean_news_t)
             if news_items:
