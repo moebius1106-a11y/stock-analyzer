@@ -10,7 +10,9 @@ import csv
 import logging
 import json
 import os
+import re
 import time
+import streamlit.components.v1 as components
 from urllib.parse import quote
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -246,6 +248,9 @@ GLOBAL_STOCK_NAMES = {
     "8299.TWO": "群聯", "8299": "群聯",
     "3529.TWO": "力旺", "3529": "力旺",
     "5274.TWO": "信驊", "5274": "信驊",
+    "1815.TWO": "富喬", "1815": "富喬",
+    "3016.TWO": "嘉晶", "3016": "嘉晶",
+    "6182.TWO": "合晶", "6182": "合晶",
     "0050.TW": "元大台灣50", "0050": "元大台灣50",
     "006208.TW": "富邦台50", "006208": "富邦台50",
     "0056.TW": "元大高股息", "0056": "元大高股息",
@@ -434,7 +439,7 @@ def fetch_live_macro_rss(query_str: str = "台股 OR 美股 OR CPI OR 聯準會 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     items = []
     try:
-        r = requests.get(url, headers=headers, timeout=3.5)
+        r = requests.get(url, headers=headers, timeout=(2.0, 3.5))
         if r.status_code == 200:
             root = ET.fromstring(r.content)
             for item in root.findall("./channel/item")[:8]:
@@ -571,10 +576,10 @@ def fetch_yf_shared_info(ticker: str):
     fut = ex.submit(_worker)
     try:
         data = fut.result(timeout=4.5)
-        ex.shutdown(wait=False)
+        ex.shutdown(wait=False, cancel_futures=True)
         return data
     except Exception:
-        ex.shutdown(wait=False)
+        ex.shutdown(wait=False, cancel_futures=True)
         return {}
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -590,10 +595,10 @@ def fetch_yf_earnings_history_safe(ticker: str):
     fut = ex.submit(_worker)
     try:
         res = fut.result(timeout=2.5)
-        ex.shutdown(wait=False)
+        ex.shutdown(wait=False, cancel_futures=True)
         return res
     except Exception:
-        ex.shutdown(wait=False)
+        ex.shutdown(wait=False, cancel_futures=True)
         return None
 
 def fetch_twse_realtime(ticker: str):
@@ -606,7 +611,7 @@ def fetch_twse_realtime(ticker: str):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
     try:
-        resp = requests.get(url, headers=headers, timeout=2.5)
+        resp = requests.get(url, headers=headers, timeout=(1.5, 2.5))
         if resp.status_code == 200:
             data = resp.json()
             msg_arr = data.get("msgArray", [])
@@ -675,8 +680,9 @@ def fetch_twse_realtime(ticker: str):
         pass
     return None
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def resolve_tw_ticker(ticker_input: str) -> str:
-    """智慧自動辨識台股上市 (.TW) 或上櫃 (.TWO) 代碼"""
+    """智慧自動辨識台股上市 (.TW) 或上櫃 (.TWO) 代碼 (含快取與字典秒級映射)"""
     clean = str(ticker_input).strip().upper()
     if not clean:
         return clean
@@ -685,8 +691,14 @@ def resolve_tw_ticker(ticker_input: str) -> str:
     if clean.endswith("=F") or clean in ("WTX", "MTX", "WMT", "TE", "TF"):
         return clean
 
-    # 若為純數字代碼，進行上市/上櫃即時自動偵測與容錯
-    if clean.isdigit():
+    # 若內建字典已明確收錄上市或上櫃後綴，直接秒級回傳
+    if f"{clean}.TWO" in GLOBAL_STOCK_NAMES:
+        return f"{clean}.TWO"
+    if f"{clean}.TW" in GLOBAL_STOCK_NAMES:
+        return f"{clean}.TW"
+
+    # 若為純數字或台股債券ETF代碼(如00679B)，進行上市/上櫃即時自動偵測與容錯
+    if clean.isdigit() or (clean[:-1].isdigit() and clean[-1].isalpha()):
         try:
             # 1. 優先嘗試 TWSE 即時撮合接口偵測市場
             tse_live = fetch_twse_realtime(f"{clean}.TW")
@@ -739,7 +751,7 @@ def fetch_twse_market_dashboard():
 
     try:
         idx_url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw|tse_t001.tw|otc_o00.tw&json=1&delay=0"
-        r_idx = session.get(idx_url, headers=headers, timeout=2.5)
+        r_idx = session.get(idx_url, headers=headers, timeout=(1.5, 2.5))
         if r_idx.status_code == 200:
             msg_arr = r_idx.json().get("msgArray", [])
             for item in msg_arr:
@@ -779,7 +791,7 @@ def fetch_twse_market_dashboard():
 
     try:
         stat_url = "https://mis.twse.com.tw/stock/api/getStatis.jsp?ex=tse&delay=0"
-        r_stat = session.get(stat_url, headers=headers, timeout=2.5)
+        r_stat = session.get(stat_url, headers=headers, timeout=(1.5, 2.5))
         if r_stat.status_code == 200:
             s_data = r_stat.json()
             detail = s_data.get("detail", {})
@@ -929,39 +941,64 @@ def calc_cdp_levels(df_daily):
 def calc_orb_levels(df_intra):
     if df_intra is None or df_intra.empty:
         return None
-    
-    # 針對台股正規盤檢驗 09:00 ~ 09:15 區間完整性
+
+    curr_p = safe_float(df_intra.iloc[-1]['Close'])
+    curr_vwap = safe_float(df_intra.iloc[-1].get('VWAP', curr_p))
+
+    # 針對台股正規盤嚴格檢驗 09:00 ~ 09:15 區間是否已完整收定
     if 'TimeStr' in df_intra.columns:
         regular_bars = df_intra[df_intra['TimeStr'] >= '09:00']
         if regular_bars.empty:
-            curr_p = safe_float(df_intra.iloc[-1]['Close'])
-            curr_vwap = safe_float(df_intra.iloc[-1].get('VWAP', curr_p))
             return {
                 "orb_high": curr_p, "orb_low": curr_p,
                 "curr_vwap": curr_vwap,
                 "status_label": "⚪ 尚未進入正式交易時段 (09:00前)，暫不建立 ORB",
                 "bias": "觀察"
             }
-        orb_window = regular_bars[regular_bars['TimeStr'] <= '09:15']
-        if len(orb_window) < 3:
-            curr_p = safe_float(df_intra.iloc[-1]['Close'])
-            curr_vwap = safe_float(df_intra.iloc[-1].get('VWAP', curr_p))
+
+        last_time_str = str(regular_bars['TimeStr'].iloc[-1])
+        orb_window = regular_bars[(regular_bars['TimeStr'] >= '09:00') & (regular_bars['TimeStr'] <= '09:15')]
+
+        # 1. 在 09:15 K 棒完全收定前（最新時間戳記未推進至 09:15 之後），嚴禁提前觸發突破訊號
+        if last_time_str <= '09:15':
+            return {
+                "orb_high": safe_float(orb_window['High'].max(), curr_p) if not orb_window.empty else curr_p,
+                "orb_low": safe_float(orb_window['Low'].min(), curr_p) if not orb_window.empty else curr_p,
+                "curr_vwap": curr_vwap,
+                "status_label": f"⏳ 開盤 15 分 K 區間建立中 (目前最新 {last_time_str}，須待 09:15 收定後才判定突破)",
+                "bias": "觀察"
+            }
+
+        # 2. 已過 09:15，檢驗 09:00~09:15 區間資料涵蓋度與連續性（涵蓋起點<=09:05、終點>=09:10，且非單根缺漏）
+        if orb_window.empty:
+            return {
+                "orb_high": curr_p, "orb_low": curr_p,
+                "curr_vwap": curr_vwap,
+                "status_label": "⚪ 缺少 09:00~09:15 開盤區間分時資料，暫不產生突破信號",
+                "bias": "觀察"
+            }
+
+        first_orb_t = str(orb_window['TimeStr'].iloc[0])
+        last_orb_t = str(orb_window['TimeStr'].iloc[-1])
+        # 判斷是否為 1 分 K (區間內有非 5 分鐘倍數之時間標籤)
+        is_1m_feed = any((int(str(t).split(':')[1]) % 5 != 0) for t in orb_window['TimeStr'] if ':' in str(t))
+        min_required_bars = 10 if is_1m_feed else 3
+
+        if first_orb_t > '09:05' or last_orb_t < '09:10' or len(orb_window) < min_required_bars:
             return {
                 "orb_high": safe_float(orb_window['High'].max(), curr_p),
                 "orb_low": safe_float(orb_window['Low'].min(), curr_p),
                 "curr_vwap": curr_vwap,
-                "status_label": "⏳ 開盤 15 分 K 區間建立中 (09:00~09:15 樣本累積中)",
+                "status_label": f"⚪ 開盤 09:00~09:15 資料不完整 ({first_orb_t}~{last_orb_t} 共 {len(orb_window)} 根)，暫不觸發正式訊號",
                 "bias": "觀察"
             }
     else:
-        if len(df_intra) < 15:
-            curr_p = safe_float(df_intra.iloc[-1]['Close'])
-            curr_vwap = safe_float(df_intra.iloc[-1].get('VWAP', curr_p))
+        if len(df_intra) <= 15:
             return {
-                "orb_high": safe_float(df_intra['High'].max()),
-                "orb_low": safe_float(df_intra['Low'].min()),
+                "orb_high": safe_float(df_intra['High'].max(), curr_p),
+                "orb_low": safe_float(df_intra['Low'].min(), curr_p),
                 "curr_vwap": curr_vwap,
-                "status_label": f"⏳ 開盤 15 分 K 建立中 (目前累積 {len(df_intra)} 根，暫不觸發突破信號)",
+                "status_label": f"⏳ 開盤 15 分 K 建立中 (目前累積 {len(df_intra)} 根，須滿 15 根收定後才觸發信號)",
                 "bias": "觀察"
             }
         orb_window = df_intra.iloc[:15]
@@ -1096,7 +1133,7 @@ def fetch_bot_forex():
     url = "https://rate.bot.com.tw/xrt/flcsv/0/day"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        r = requests.get(url, headers=headers, timeout=3.0)
+        r = requests.get(url, headers=headers, timeout=(2.0, 3.0))
         if r.status_code == 200:
             reader = csv.reader(r.text.splitlines())
             for row in reader:
@@ -1323,10 +1360,10 @@ def fetch_futures_analyst_consensus(code: str, df_fut: pd.DataFrame, df_mkt: pd.
             "opinions": 0
         }
 
-    last_fut = df_fut.iloc[-1]['Close']
-    ma5 = df_fut['MA5'].iloc[-1]
-    ma20 = df_fut['MA20'].iloc[-1]
-    ma60 = df_fut['MA60'].iloc[-1]
+    last_fut = safe_float(df_fut.iloc[-1]['Close'])
+    ma5 = safe_float(df_fut['MA5'].iloc[-1], last_fut)
+    ma20 = safe_float(df_fut['MA20'].iloc[-1], last_fut)
+    ma60 = safe_float(df_fut['MA60'].iloc[-1], ma20)
 
     basis = 0.0
     if df_mkt is not None and not df_mkt.empty:
@@ -1345,7 +1382,7 @@ def fetch_futures_analyst_consensus(code: str, df_fut: pd.DataFrame, df_mkt: pd.
         rec_label = "🟡 區間箱型拉鋸 (Neutral)"
         rec_desc = "多空籌碼膠著，均線糾結，短線預期於整數關卡進行區間震盪整理"
 
-    atr = df_fut['ATR14'].iloc[-1] if 'ATR14' in df_fut.columns else 150.0
+    atr = safe_float(df_fut['ATR14'].iloc[-1], default=150.0) if 'ATR14' in df_fut.columns else 150.0
     recent_high = df_fut['High'].tail(20).max()
     recent_low = df_fut['Low'].tail(20).min()
 
@@ -1410,10 +1447,10 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
         if df.empty or len(df) < 5:
             return None
 
-        df['MA5'] = df['Close'].rolling(5, min_periods=1).mean()
-        df['MA20'] = df['Close'].rolling(20, min_periods=5).mean()
-        df['MA60'] = df['Close'].rolling(60, min_periods=20).mean()
-        df['Vol_MA5'] = df['Volume'].rolling(5, min_periods=1).mean()
+        df['MA5'] = df['Close'].rolling(5, min_periods=5).mean()
+        df['MA20'] = df['Close'].rolling(20, min_periods=20).mean()
+        df['MA60'] = df['Close'].rolling(60, min_periods=60).mean()
+        df['Vol_MA5'] = df['Volume'].rolling(5, min_periods=5).mean()
 
         delta = df['Close'].diff()
         gain = delta.clip(lower=0)
@@ -1421,19 +1458,20 @@ def fetch_and_calc(ticker: str, period: str = "1y"):
         avg_gain = gain.ewm(alpha=1/14.0, adjust=False, min_periods=14).mean()
         avg_loss = loss.ewm(alpha=1/14.0, adjust=False, min_periods=14).mean()
         rs = avg_gain / (avg_loss + 1e-9)
-        df['RSI14'] = (100.0 - (100.0 / (1.0 + rs))).fillna(50.0)
+        # 暖機期未滿 14 期保留 NaN，不偽裝填補為 50.0
+        df['RSI14'] = 100.0 - (100.0 / (1.0 + rs))
 
-        ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-        ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+        ema12 = df['Close'].ewm(span=12, adjust=False, min_periods=12).mean()
+        ema26 = df['Close'].ewm(span=26, adjust=False, min_periods=26).mean()
         df['DIF'] = ema12 - ema26
-        df['MACD'] = df['DIF'].ewm(span=9, adjust=False).mean()
+        df['MACD'] = df['DIF'].ewm(span=9, adjust=False, min_periods=9).mean()
         df['OSC'] = df['DIF'] - df['MACD']
 
         hl = df['High'] - df['Low']
         hc = (df['High'] - df['Close'].shift()).abs()
         lc = (df['Low'] - df['Close'].shift()).abs()
         tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-        df['ATR14'] = tr.rolling(14, min_periods=1).mean().ffill()
+        df['ATR14'] = tr.rolling(14, min_periods=14).mean()
 
         return df.copy()
     except Exception:
@@ -1605,26 +1643,38 @@ def analyze_opening_and_ma(df_stock, live_info=None):
     last = df_stock.iloc[-1]
     prev = df_stock.iloc[-2] if len(df_stock) >= 2 else last
     close = safe_float(last['Close'])
-    ma5 = safe_float(last['MA5'], close)
-    ma20 = safe_float(last['MA20'], close)
-    ma60 = safe_float(last['MA60'], close)
+    has_ma5 = pd.notna(last.get('MA5'))
+    has_ma20 = pd.notna(last.get('MA20'))
+    has_ma60 = pd.notna(last.get('MA60'))
+    ma5 = safe_float(last.get('MA5'), close)
+    ma20 = safe_float(last.get('MA20'), close)
+    ma60 = safe_float(last.get('MA60'), ma20)
 
     ma_status = {
-        "ma5_diff": ((close - ma5) / (ma5 + 1e-9)) * 100,
-        "ma20_diff": ((close - ma20) / (ma20 + 1e-9)) * 100,
-        "ma60_diff": ((close - ma60) / (ma60 + 1e-9)) * 100,
+        "ma5_diff": ((close - ma5) / (ma5 + 1e-9)) * 100 if has_ma5 else 0.0,
+        "ma20_diff": ((close - ma20) / (ma20 + 1e-9)) * 100 if has_ma20 else 0.0,
+        "ma60_diff": ((close - ma60) / (ma60 + 1e-9)) * 100 if has_ma60 else 0.0,
         "ma5_val": ma5,
         "ma20_val": ma20,
-        "ma60_val": ma60
+        "ma60_val": ma60,
+        "has_ma5": has_ma5,
+        "has_ma20": has_ma20,
+        "has_ma60": has_ma60
     }
 
-    if close > ma5 > ma20 > ma60:
+    if not has_ma20:
+        ma_alignment = "⏳ 歷史樣本未滿 20 日 (均線暖機資料累積中)"
+        ma_score = 8
+    elif has_ma60 and close > ma5 > ma20 > ma60:
         ma_alignment = "🔥 完美多頭排列 (價格 > 日線 > 月線 > 季線)"
         ma_score = 25
-    elif close > ma20 and ma20 > ma60:
+    elif has_ma60 and close > ma20 and ma20 > ma60:
         ma_alignment = "📈 中長線偏多架構 (守穩月線與季線)"
         ma_score = 18
-    elif close < ma5 < ma20 < ma60:
+    elif not has_ma60 and close > ma5 > ma20:
+        ma_alignment = "📈 短中期偏多架構 (站上日線與月線，季線暖機中)"
+        ma_score = 18
+    elif has_ma60 and close < ma5 < ma20 < ma60:
         ma_alignment = "❄️ 完全空頭排列 (價格被所有均線下壓)"
         ma_score = 0
     else:
@@ -1798,13 +1848,16 @@ def analyze_forex_data():
 def preload_global_benchmarks():
     tickers = ["^TWII", "WTX=F", "TSM", "^SOX", "^GSPC"]
     results = {}
-    with ThreadPoolExecutor(max_workers=5) as ex:
+    ex = ThreadPoolExecutor(max_workers=5)
+    try:
         futs = {t: ex.submit(fetch_and_calc, t) for t in tickers}
         for t, f in futs.items():
             try:
                 results[t] = f.result(timeout=5.0)
             except Exception:
                 results[t] = None
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
     return results
 
 def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, forex_info, asset_type="tw", include_inst_suite=True):
@@ -1840,7 +1893,7 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
         inst_suite = fetch_institutional_research_suite(ticker) if include_inst_suite else {"has_suite": False}
         try:
             if df_tsm is not None and len(df_tsm) >= 2:
-                tsm_change = ((df_tsm['Close'].iloc[-1] - df_tsm['Close'].iloc[-2]) / df_tsm['Close'].iloc[-2]) * 100
+                tsm_change = ((df_tsm['Close'].iloc[-1] - df_tsm['Close'].iloc[-2]) / (df_tsm['Close'].iloc[-2] + 1e-9)) * 100
                 if tsm_change >= 1.5:
                     global_score += 15
                     global_reasons.append(f"TSM ADR 大漲 ({tsm_change:+.1f}%)，國際連動強勁")
@@ -1869,35 +1922,42 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
     mkt_reasons = []
     if df_market is not None and not df_market.empty:
         last_mkt = df_market.iloc[-1]
-        if last_mkt['Close'] > last_mkt['MA20']:
+        if pd.notna(last_mkt.get('MA20')) and last_mkt['Close'] > last_mkt['MA20']:
             mkt_score += 12
             mkt_reasons.append("大盤站上月線 (20MA)，多方主導發球權")
-        else:
+        elif pd.notna(last_mkt.get('MA20')):
             mkt_reasons.append("大盤跌破月線，系統性拉回風險偏高")
-        if last_mkt['MA20'] > last_mkt['MA60']:
+        if pd.notna(last_mkt.get('MA20')) and pd.notna(last_mkt.get('MA60')) and last_mkt['MA20'] > last_mkt['MA60']:
             mkt_score += 8
             mkt_reasons.append("大盤季線多頭架構 (20MA > 60MA)")
 
     tech_score = 0
     tech_reasons = []
-    vol_ratio = safe_float(last_stk['Volume']) / (safe_float(last_stk['Vol_MA5']) + 1e-9)
-    if close > prev_stk['Close'] and vol_ratio >= 1.2:
+    has_vol_ma5 = pd.notna(last_stk.get('Vol_MA5')) and safe_float(last_stk.get('Vol_MA5')) > 0
+    vol_ratio = (safe_float(last_stk['Volume']) / (safe_float(last_stk['Vol_MA5']) + 1e-9)) if has_vol_ma5 else 0.0
+    if close > prev_stk['Close'] and has_vol_ma5 and vol_ratio >= 1.2:
         tech_score += 10
         tech_reasons.append(f"量增價漲 (爆量比: {vol_ratio:.1f}x)")
     elif close > prev_stk['Close']:
         tech_score += 5
         tech_reasons.append("價漲但量能平淡")
 
-    if last_stk['OSC'] > 0 and last_stk['OSC'] > prev_stk['OSC']:
+    osc_curr = safe_float(last_stk.get('OSC'), default=None) if pd.notna(last_stk.get('OSC')) else None
+    osc_prev = safe_float(prev_stk.get('OSC'), default=None) if pd.notna(prev_stk.get('OSC')) else None
+    if osc_curr is not None and osc_curr > 0 and osc_prev is not None and osc_curr > osc_prev:
         tech_score += 8
         tech_reasons.append("MACD 紅柱放大，攻擊動能足")
-    elif last_stk['OSC'] > 0:
+    elif osc_curr is not None and osc_curr > 0:
         tech_score += 4
         tech_reasons.append("MACD 維持多頭")
 
-    if 50 <= last_stk['RSI14'] <= 70:
-        tech_score += 7
-        tech_reasons.append(f"RSI 處健康攻擊區 ({last_stk['RSI14']:.1f})")
+    rsi_curr = safe_float(last_stk.get('RSI14'), default=None) if pd.notna(last_stk.get('RSI14')) else None
+    if rsi_curr is not None:
+        if 50 <= rsi_curr <= 70:
+            tech_score += 7
+            tech_reasons.append(f"RSI 處健康攻擊區 ({rsi_curr:.1f})")
+    else:
+        tech_reasons.append("RSI14 暖機資料不足 (N/A)")
 
     analyst_bonus = 0
     if analyst_data["has_data"]:
@@ -1919,8 +1979,9 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
 
     total_score = min(max(total_score, 0), 100)
 
-    ma20_val = safe_float(last_stk['MA20'], close * 0.96)
-    if close >= ma20_val:
+    has_stk_ma20 = pd.notna(last_stk.get('MA20'))
+    ma20_val = safe_float(last_stk.get('MA20'), close * 0.96) if has_stk_ma20 else (close * 0.96)
+    if (not has_stk_ma20) or (close >= ma20_val):
         raw_stop = max(close - 2.0 * atr_val, ma20_val - 0.5 * atr_val)
         stop_loss = min(raw_stop, close * 0.985)
         is_breakdown = False
@@ -1961,6 +2022,115 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
         "live_info": live_twse,
         "asset_type": asset_type
     }
+
+# 期貨保證金集中管理與基準日期標示（期交所可能動態調整，請以最新公告為準）
+FUTURES_MARGIN_UPDATED_AT = "2026-10"
+FUTURES_MARGIN_SOURCE = "臺灣期貨交易所 (TAIFEX) 基準參數（人工定期校驗）"
+
+# ----------------- Gemini 3.8 輕量按鈕觸發・質化操盤劇本模組 -----------------
+GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"
+GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
+
+def get_gemini_api_key() -> str:
+    """安全取得 Gemini API Key（優先讀取 st.secrets 與環境變數，其次讀取當前 Session）"""
+    try:
+        if "GEMINI_API_KEY" in st.secrets and str(st.secrets["GEMINI_API_KEY"]).strip():
+            return str(st.secrets["GEMINI_API_KEY"]).strip()
+    except Exception:
+        pass
+    env_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if env_key:
+        return env_key
+    return str(st.session_state.get("session_gemini_api_key", "")).strip()
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_gemini_qualitative_playbook(
+    api_key: str,
+    model_name: str,
+    ticker_label: str,
+    asset_type: str,
+    close_p: float,
+    total_score: int,
+    ma_alignment: str,
+    ma20_diff: float,
+    is_breakdown: bool,
+    k_type: str,
+    gap_pct: float,
+    vix_price: float,
+    vix_pct: float,
+    rel_alpha_20d: float,
+    rec_label: str,
+    news_titles_tuple: tuple
+):
+    """
+    輕量級 Gemini API 質化劇本解讀（30分鐘快取隔離，不佔用本機 RAM、不干預確定性算術與風控數字）
+    """
+    if not api_key:
+        return False, "⚠️ 尚未設定 Gemini API Key。請展開頁面頂部「⚙️ 個人風控本金、當沖折讓與看盤備忘錄」填入金鑰，或於 Streamlit Secrets 設定 `GEMINI_API_KEY`。"
+
+    news_str = "；".join(news_titles_tuple[:3]) if news_titles_tuple else "目前無重大異常外電"
+    trend_state = "跌破月線(20MA)空方防守格局" if is_breakdown else "站穩月線(20MA)之上多方控盤格局"
+
+    prompt_text = (
+        f"你是一位資深機構級量化操盤手與風險控管專家。請針對標的【{ticker_label}】（資產類別：{asset_type}）"
+        f"進行「純質化（Qualitative）盤勢氛圍與次日應變劇本解讀」。\n\n"
+        f"【嚴格紀律限制】：\n"
+        f"1. 系統的停損價、目標價、當沖保本檔位與可買張數/口數皆已由 Python 確定性演算法精確算出，請勿在文字中自行捏造、重算或篡改任何具體進出場價位與下單張數/口數。\n"
+        f"2. 請專注於「多空發球權定調、指標共振或背離解讀、總經 VIX 避險情緒連動、盤中應變劇本」。\n"
+        f"3. 總字數控制在 320 字以內，條列分明、直指要害。\n\n"
+        f"【系統已算出之客觀量化狀態】：\n"
+        f"- 最新報價：{close_p:,.2f} ｜ 綜合量化總分：{total_score} / 100\n"
+        f"- 均線結構：{ma_alignment}（月線 20MA 乖離率：{ma20_diff:+.2f}% ｜ 位階：{trend_state}）\n"
+        f"- 開盤型態：{k_type}（跳空幅度：{gap_pct:+.2f}%）\n"
+        f"- 近 20 日相對大盤超額報酬 (Alpha)：{rel_alpha_20d:+.2f}%\n"
+        f"- 法人/期顧共識評等：{rec_label}\n"
+        f"- 全市場 VIX 恐慌指數：{vix_price:.2f}（位於過去 252 日之 {vix_pct:.1f}% 歷史百分位）\n"
+        f"- 近期焦點外電標題：{news_str}\n\n"
+        f"請嚴格依以下三個小標題輸出 Markdown：\n"
+        f"1. 🎯 **多空結構與籌碼定調**（判讀技術位階與相對大盤強弱）\n"
+        f"2. ⚡ **盤中實戰應變劇本**（結合開盤型態、均線乖離與 VWAP/ORB 順逆勢應對原則）\n"
+        f"3. 🚨 **VIX 宏觀波動與極限風控提醒**（點出當前最需提防的誘多/誘空或系統性風險）"
+    )
+
+    candidate_models = [model_name]
+    if GEMINI_FALLBACK_MODEL not in candidate_models:
+        candidate_models.append(GEMINI_FALLBACK_MODEL)
+
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "contents": [{"parts": [{"text": prompt_text}]}],
+        "generationConfig": {
+            "temperature": 0.25,
+            "maxOutputTokens": 650
+        }
+    }
+
+    last_err = ""
+    for m_id in candidate_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_id}:generateContent?key={api_key}"
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=(3.0, 10.0))
+            if resp.status_code == 200:
+                r_json = resp.json()
+                candidates = r_json.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts and "text" in parts[0]:
+                        model_badge = f"*(由 `{m_id}` 模型即時推演・30分鐘快取保護中)*\n\n"
+                        return True, model_badge + parts[0]["text"].strip()
+                last_err = f"模型 `{m_id}` 回傳內容為空。"
+            elif resp.status_code in (404, 400) and m_id != candidate_models[-1]:
+                # 若指定之 3.8 模型在該金鑰區域尚未開通，自動平滑降級至 fallback 模型
+                continue
+            elif resp.status_code == 429:
+                return False, "⚠️ Gemini API 呼叫頻率達上限 (HTTP 429 Quota Exceeded)，請稍候幾分鐘再試。"
+            else:
+                err_msg = resp.text[:160]
+                last_err = f"HTTP {resp.status_code}: {err_msg}"
+        except Exception as e:
+            last_err = f"連線逾時或網路異常 ({str(e)})"
+
+    return False, f"⚠️ Gemini AI 暫時無法回應（{last_err}）。系統量化指標與下單風控計算機均維持正常運作。"
 
 TW_FUTURES_SPECS = {
     "WTX": {
@@ -2267,7 +2437,8 @@ def render_institutional_research_panel(res, ticker_raw, mode_type="tw"):
 
 # ================= 模組共用渲染器 =================
 def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallback_warning=None, ticker_raw=None, is_spot_fallback=False):
-    is_downtrend = res.get('is_breakdown', False) or (res['close'] < res['ma_status']['ma20_val'])
+    has_ma20_flag = res.get('ma_status', {}).get('has_ma20', True)
+    is_downtrend = bool(has_ma20_flag and (res.get('is_breakdown', False) or (res['close'] < res['ma_status']['ma20_val'])))
     close = safe_float(res.get('close', 0.0))
     if close <= 0:
         close = 1.0
@@ -2522,70 +2693,119 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
             st.error("### 🔴 暫緩進場：評價過高或短期均線下壓，空手觀望為上")
 
 
+    # ★ 輕量按鈕觸發：Gemini 3.8 AI 質化操盤劇本解讀
+    with st.expander("🤖 【Gemini 3.8 首席操盤手・質化劇本解讀 (輕量按需觸發)】", expanded=False):
+        st.caption("⚡ **零記憶體負擔・不干預確定性算術**：點擊下方按鈕後才呼叫雲端模型，針對當前技術位階、VIX 恐慌分位與外電進行質化劇本推演（內建 30 分鐘快取保護，不重複消耗 API 額度）。")
+        ai_cache_key = f"ai_playbook_res_{stable_key_suffix}"
+        if st.button("🚀 呼叫 Gemini 3.8 生成即時多空應變劇本", type="primary", use_container_width=True, key=f"btn_gemini_{stable_key_suffix}"):
+            with st.spinner("連線 Gemini 3.8 進行跨維度質化劇本推演中..."):
+                vix_d = fetch_vix_percentile()
+                vix_p_val = safe_float(vix_d.get("vix_price"), 18.0) if vix_d.get("has_data") else 18.0
+                vix_pct_val = safe_float(vix_d.get("vix_pct"), 50.0) if vix_d.get("has_data") else 50.0
+                n_items = fetch_stock_news(ticker_raw) if (ticker_raw and mode_type != "futures") else []
+                n_titles = tuple( item["title"] for item in n_items[:3] ) if n_items else ()
+                sel_model = str(st.session_state.get("gemini_model_choice", GEMINI_DEFAULT_MODEL))
+                ok_flag, ai_text = fetch_gemini_qualitative_playbook(
+                    api_key=get_gemini_api_key(),
+                    model_name=sel_model,
+                    ticker_label=disp_header or str(ticker_raw),
+                    asset_type=mode_type,
+                    close_p=close,
+                    total_score=int(res.get("total_score", 0)),
+                    ma_alignment=str(res.get("ma_alignment", "")),
+                    ma20_diff=safe_float(res.get("ma_status", {}).get("ma20_diff", 0.0)),
+                    is_breakdown=bool(is_downtrend),
+                    k_type=str(res.get("k_type", "")),
+                    gap_pct=safe_float(res.get("gap_pct", 0.0)),
+                    vix_price=vix_p_val,
+                    vix_pct=vix_pct_val,
+                    rel_alpha_20d=safe_float(res.get("rel_alpha_20d", 0.0)),
+                    rec_label=str(an_data.get("rec_label", "中立")),
+                    news_titles_tuple=n_titles
+                )
+                st.session_state[ai_cache_key] = (ok_flag, ai_text)
+
+        if ai_cache_key in st.session_state:
+            ok_flag, ai_text = st.session_state[ai_cache_key]
+            if ok_flag:
+                st.info(ai_text)
+            else:
+                st.warning(ai_text)
+
     # ★ 十大技術指標 Check-list 計分儀表板
     with st.expander("📊 【十大技術指標 Check-list 儀表板】量化多空逐項檢視", expanded=False):
-        st.caption("透過 10 項嚴格量化規則進行多空體質逐項檢核，一眼看懂綜合評分組成：")
+        st.caption("透過 10 項嚴格量化規則進行多空體質逐項檢核，暖機資料不足時明確標示 N/A：")
         
-        # 計算各項指標狀態
         closes_s = df_asset['Close']
-        ma5_s = df_asset['MA5'] if 'MA5' in df_asset.columns else closes_s.rolling(5).mean()
-        ma20_s = df_asset['MA20'] if 'MA20' in df_asset.columns else closes_s.rolling(20).mean()
-        ma60_s = df_asset['MA60'] if 'MA60' in df_asset.columns else closes_s.rolling(60).mean()
-        rsi_s = df_asset['RSI14'] if 'RSI14' in df_asset.columns else pd.Series([50]*len(df_asset))
-        osc_s = df_asset['OSC'] if 'OSC' in df_asset.columns else pd.Series([0]*len(df_asset))
+        ma5_s = df_asset['MA5'] if 'MA5' in df_asset.columns else closes_s.rolling(5, min_periods=5).mean()
+        ma20_s = df_asset['MA20'] if 'MA20' in df_asset.columns else closes_s.rolling(20, min_periods=20).mean()
+        ma60_s = df_asset['MA60'] if 'MA60' in df_asset.columns else closes_s.rolling(60, min_periods=60).mean()
+        rsi_s = df_asset['RSI14'] if 'RSI14' in df_asset.columns else pd.Series([np.nan]*len(df_asset))
+        osc_s = df_asset['OSC'] if 'OSC' in df_asset.columns else pd.Series([np.nan]*len(df_asset))
         vol_s = df_asset['Volume'] if 'Volume' in df_asset.columns else pd.Series([0]*len(df_asset))
-        vol_ma5_s = df_asset['Vol_MA5'] if 'Vol_MA5' in df_asset.columns else vol_s.rolling(5).mean()
+        vol_ma5_s = df_asset['Vol_MA5'] if 'Vol_MA5' in df_asset.columns else vol_s.rolling(5, min_periods=5).mean()
         
         c_val = safe_float(closes_s.iloc[-1])
+        has_m5 = pd.notna(ma5_s.iloc[-1])
+        has_m20 = pd.notna(ma20_s.iloc[-1])
+        has_m60 = pd.notna(ma60_s.iloc[-1])
+        has_rsi = pd.notna(rsi_s.iloc[-1])
+        has_osc = pd.notna(osc_s.iloc[-1])
+        has_vol_m5 = pd.notna(vol_ma5_s.iloc[-1]) and safe_float(vol_ma5_s.iloc[-1]) > 0
+        has_atr = ('ATR14' in df_asset.columns) and pd.notna(df_asset['ATR14'].iloc[-1])
+
         m5_v = safe_float(ma5_s.iloc[-1], c_val)
         m20_v = safe_float(ma20_s.iloc[-1], c_val)
         m60_v = safe_float(ma60_s.iloc[-1], c_val)
-        rsi_v = safe_float(rsi_s.iloc[-1], 50.0)
-        osc_v = safe_float(osc_s.iloc[-1], 0.0)
+        rsi_v = safe_float(rsi_s.iloc[-1], default=None) if has_rsi else None
+        osc_v = safe_float(osc_s.iloc[-1], default=None) if has_osc else None
         vol_v = safe_float(vol_s.iloc[-1], 0.0)
         vol_m5_v = safe_float(vol_ma5_s.iloc[-1], 1.0)
         
-        # 1. 均線排列
-        chk_ma_align = c_val > m5_v > m20_v > m60_v
-        # 2. 月線生命線
-        chk_ma20 = c_val > m20_v
-        # 3. 季線多頭
-        chk_ma60 = m20_v > m60_v
-        # 4. 成交量能爆量
-        chk_vol = (vol_v / (vol_m5_v + 1e-9)) >= 1.2
+        # 1. 均線排列 (需滿 60 日暖機)
+        chk_ma_align = bool(has_m5 and has_m20 and has_m60 and (c_val > m5_v > m20_v > m60_v))
+        # 2. 月線生命線 (需滿 20 日暖機)
+        chk_ma20 = bool(has_m20 and (c_val > m20_v))
+        # 3. 季線多頭 (需滿 60 日暖機)
+        chk_ma60 = bool(has_m20 and has_m60 and (m20_v > m60_v))
+        # 4. 成交量能爆量 (需滿 5 日均量)
+        chk_vol = bool(has_vol_m5 and ((vol_v / (vol_m5_v + 1e-9)) >= 1.2))
         # 5. MACD 多頭攻擊
-        chk_macd = osc_v > 0 and (len(osc_s) < 2 or osc_v > safe_float(osc_s.iloc[-2]))
-        # 6. RSI 動能區間
-        chk_rsi = 50 <= rsi_v <= 70
+        chk_macd = bool(has_osc and osc_v is not None and osc_v > 0 and (len(osc_s) >= 2 and pd.notna(osc_s.iloc[-2]) and osc_v > safe_float(osc_s.iloc[-2])))
+        # 6. RSI 動能區間 (需滿 14 日暖機，絕不將 NaN 偽裝為 50)
+        chk_rsi = bool(has_rsi and rsi_v is not None and (50.0 <= rsi_v <= 70.0))
         # 7. 價格高於開盤價
         o_val = safe_float(df_asset.iloc[-1].get('Open'), c_val)
-        chk_k = c_val >= o_val
-        # 8. 波動率防守 (ATR 合理)
-        atr_v = safe_float(df_asset.iloc[-1].get('ATR14'), c_val * 0.02)
-        chk_atr = (atr_v / c_val) < 0.04
+        chk_k = bool(c_val >= o_val)
+        # 8. 波動率防守 (ATR 需滿 14 日暖機)
+        atr_v = safe_float(df_asset.iloc[-1].get('ATR14'), default=None) if has_atr else None
+        chk_atr = bool(has_atr and atr_v is not None and c_val > 0 and ((atr_v / c_val) < 0.04))
         # 9. 綜合評分門檻
-        chk_score = res.get('total_score', 0) >= 70
+        chk_score = bool(res.get('total_score', 0) >= 70)
         # 10. 相對大盤強度
-        chk_alpha = res.get('rel_alpha_20d', 0.0) >= 0.0
+        chk_alpha = bool(res.get('rel_alpha_20d', 0.0) >= 0.0)
         
+        rsi_disp_note = f"{rsi_v:.1f}" if rsi_v is not None else "N/A 暖機不足"
+        atr_disp_note = f"{(atr_v / c_val * 100):.2f}%" if (atr_v is not None and c_val > 0) else "N/A 暖機不足"
+
         check_items = [
-            ("1. 均線完美多頭排列 (P>5MA>20MA>60MA)", chk_ma_align, "+15分"),
-            ("2. 站穩月線生命線 (Price > 20MA)", chk_ma20, "+12分"),
-            ("3. 中長線季線多頭架構 (20MA > 60MA)", chk_ma60, "+10分"),
-            ("4. 盤中帶量攻擊 (成交量 >= 1.2x 5日均量)", chk_vol, "+10分"),
-            ("5. MACD 動能紅柱放大 (OSC > 0 且擴增)", chk_macd, "+10分"),
-            ("6. RSI 動能指標處健康區間 (50 ~ 70)", chk_rsi, "+8分"),
-            ("7. 實體 K 棒開低走高或收紅 (Close >= Open)", chk_k, "+5分"),
-            ("8. 波動率 ATR 風控適度 (ATR/Price < 4%)", chk_atr, "+5分"),
-            ("9. 總合量化決策評分達標 (Score >= 70分)", chk_score, "+15分"),
-            ("10. 近 20 日相對大盤超額報酬 (Alpha >= 0%)", chk_alpha, "+10分"),
+            ("1. 均線完美多頭排列 (P>5MA>20MA>60MA)", chk_ma_align, has_m60, "+15分"),
+            ("2. 站穩月線生命線 (Price > 20MA)", chk_ma20, has_m20, "+12分"),
+            ("3. 中長線季線多頭架構 (20MA > 60MA)", chk_ma60, has_m60, "+10分"),
+            ("4. 盤中帶量攻擊 (成交量 >= 1.2x 5日均量)", chk_vol, has_vol_m5, "+10分"),
+            ("5. MACD 動能紅柱放大 (OSC > 0 且擴增)", chk_macd, has_osc, "+10分"),
+            (f"6. RSI14 處健康攻擊區 50~70 (當前: {rsi_disp_note})", chk_rsi, has_rsi, "+8分"),
+            ("7. 實體 K 棒開低走高或收紅 (Close >= Open)", chk_k, True, "+5分"),
+            (f"8. 波動率 ATR14 風控適度 <4% (當前: {atr_disp_note})", chk_atr, has_atr, "+5分"),
+            ("9. 總合量化決策評分達標 (Score >= 70分)", chk_score, True, "+15分"),
+            ("10. 近 20 日相對大盤超額報酬 (Alpha >= 0%)", chk_alpha, len(df_asset) >= 21, "+10分"),
         ]
         
-        passed_count = sum(1 for _, passed, _ in check_items if passed)
+        passed_count = sum(1 for _, passed, _, _ in check_items if passed)
         st.markdown(f"**💡 檢核通過項目：`{passed_count} / 10 項`**（綜合評分：`{res.get('total_score', 0)} 分`）")
         
-        for desc, passed, score_val in check_items:
-            icon = "🟢 符合" if passed else "⚪ 未符"
+        for desc, passed, is_ready, score_val in check_items:
+            icon = "🟢 符合" if passed else ("⏳ 資料暖機中(N/A)" if not is_ready else "⚪ 未符")
             st.markdown(f"- `{icon}` **{desc}**（權重：{score_val}）")
 
     with st.expander("⚡ 【開盤即時撮合動態】", expanded=False):
@@ -2600,13 +2820,15 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
     with st.expander("📏 【日 / 月 / 季線 位階矩陣】", expanded=False):
         st.markdown(f"**均線排列結構：** `{res['ma_alignment']}`")
         m1, m2, m3 = st.columns(3)
-        m1.metric("日線 (5MA)", f"{res['ma_status']['ma5_val']:.2f}", f"{res['ma_status']['ma5_diff']:+.1f}%")
-        m2.metric("月線 (20MA)", f"{res['ma_status']['ma20_val']:.2f}", f"{res['ma_status']['ma20_diff']:+.1f}%")
-        m3.metric("季線 (60MA)", f"{res['ma_status']['ma60_val']:.2f}", f"{res['ma_status']['ma60_diff']:+.1f}%")
+        m_stat = res['ma_status']
+        m1.metric("日線 (5MA)", f"{m_stat['ma5_val']:.2f}" if m_stat.get('has_ma5', True) else "N/A (未滿5日)", f"{m_stat['ma5_diff']:+.1f}%" if m_stat.get('has_ma5', True) else "暖機中")
+        m2.metric("月線 (20MA)", f"{m_stat['ma20_val']:.2f}" if m_stat.get('has_ma20', True) else "N/A (未滿20日)", f"{m_stat['ma20_diff']:+.1f}%" if m_stat.get('has_ma20', True) else "暖機中")
+        m3.metric("季線 (60MA)", f"{m_stat['ma60_val']:.2f}" if m_stat.get('has_ma60', True) else "N/A (未滿60日)", f"{m_stat['ma60_diff']:+.1f}%" if m_stat.get('has_ma60', True) else "暖機中")
 
     if mode_type == "futures":
         with st.expander("💎 【期貨契約規格與保證金護城河】", expanded=False):
             st.markdown(f"**標的商品**：`{spec['name']}` ｜ {spec['desc']}")
+            st.caption(f"📌 保證金資料基準日：`{FUTURES_MARGIN_UPDATED_AT}` ｜ 來源：{FUTURES_MARGIN_SOURCE}（期交所可能隨市場波動動態調整，實盤請以期貨商最新公告為準）")
             sp1, sp2 = st.columns(2)
             sp1.metric("每一跳動點價值", f"NT$ {spec['tick_value']:,} 元")
             sp2.metric("原始保證金門檻", f"NT$ {spec['initial_margin']:,} 元")
@@ -2656,7 +2878,7 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         col_cap, col_risk = st.columns(2)
         with col_cap:
             if mode_type == "futures":
-                default_cap = int(user_memory.get("capital_tw", 1000000))
+                default_cap = int(user_memory.get("capital_fut", 1000000))
                 cap_step = 100000
                 cap_label = "期貨專戶保證金餘額 (NTD)"
             elif mode_type == "us":
@@ -2804,6 +3026,26 @@ with st.expander("⚙️ 個人風控本金、當沖折讓與看盤備忘錄", e
 
     u_disc = st.slider("當沖券商手續費折讓（例如 2.8 折輸入 0.28）", min_value=0.10, max_value=1.00, value=float(user_memory.get("daytrade_fee_discount", 0.28)), step=0.01, key="prof_disc")
     u_note = st.text_area("📝 個人看盤備忘錄", value=user_memory.get("personal_note", ""), height=68, key="prof_note")
+
+    st.write("---")
+    st.caption("🤖 **Gemini AI 操盤劇本設定（選填・僅保存在當前瀏覽器 Session 記憶體，絕不寫入公開檔案以防外洩）**：")
+    ai_c1, ai_c2 = st.columns([2.2, 1.8])
+    with ai_c1:
+        u_gemini_key = st.text_input(
+            "Gemini API Key (若已設於 Streamlit Secrets 可留空)",
+            value=st.session_state.get("session_gemini_api_key", ""),
+            type="password",
+            placeholder="AIzaSy...",
+            key="prof_gemini_key_in"
+        )
+    with ai_c2:
+        u_gemini_model = st.selectbox(
+            "首選推演模型版本",
+            options=["gemini-3.8-flash", "gemini-2.5-flash"],
+            index=0,
+            key="gemini_model_choice",
+            help="預設採用最新 gemini-3.8-flash；若金鑰權限未開通將自動平滑降級至 2.5-flash"
+        )
     
     if st.button("💾 儲存本機偏好設定", use_container_width=True, key="btn_save_profile"):
         user_memory["capital_tw"] = u_cap_tw
@@ -2812,6 +3054,8 @@ with st.expander("⚙️ 個人風控本金、當沖折讓與看盤備忘錄", e
         user_memory["risk_pct"] = u_risk
         user_memory["daytrade_fee_discount"] = u_disc
         user_memory["personal_note"] = u_note
+        if u_gemini_key.strip():
+            st.session_state["session_gemini_api_key"] = u_gemini_key.strip()
         save_user_data()
         st.success("已儲存偏好參數！")
 
@@ -3397,10 +3641,10 @@ elif st.session_state.main_mode == "us_futures":
     for name, code, desc in US_FUT_LIST:
         df_g = fetch_and_calc(code)
         if df_g is not None and len(df_g) >= 2:
-            last_p = df_g.iloc[-1]['Close']
-            prev_p = df_g.iloc[-2]['Close']
-            chg_pct = ((last_p - prev_p) / prev_p) * 100
-            ma5_g = df_g['MA5'].iloc[-1]
+            last_p = safe_float(df_g.iloc[-1]['Close'])
+            prev_p = safe_float(df_g.iloc[-2]['Close'], last_p)
+            chg_pct = ((last_p - prev_p) / (prev_p + 1e-9)) * 100
+            ma5_g = safe_float(df_g['MA5'].iloc[-1], last_p)
             status = "🔥 站上 5MA 攻擊" if last_p > ma5_g else "❄️ 跌破 5MA 防守"
 
             c_f1, c_f2 = st.columns([2, 1])
@@ -3480,7 +3724,8 @@ elif st.session_state.main_mode == "etf":
             except Exception as e:
                 return ("FAIL", item[0], item[1], str(e))
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        executor = ThreadPoolExecutor(max_workers=5)
+        try:
             total_items = len(target_etfs)
             futures = [executor.submit(etf_worker, item) for item in target_etfs]
             for idx, f in enumerate(futures):
@@ -3494,6 +3739,8 @@ elif st.session_state.main_mode == "etf":
                 except Exception as ex:
                     failed_etfs.append(f"執行逾時或例外: {str(ex)}")
                 progress_bar.progress((idx + 1) / total_items)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
         status_text.empty()
         progress_bar.empty()
@@ -3572,7 +3819,8 @@ elif st.session_state.main_mode == "market":
             except Exception as e:
                 return ("FAIL", item[0], item[1], str(e))
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        executor = ThreadPoolExecutor(max_workers=5)
+        try:
             total_items = len(MARKET_QUALITY_UNIVERSE)
             futures = [executor.submit(worker, item) for item in MARKET_QUALITY_UNIVERSE]
             for idx, f in enumerate(futures):
@@ -3586,6 +3834,8 @@ elif st.session_state.main_mode == "market":
                 except Exception as ex:
                     failed_stocks.append(f"執行逾時或例外: {str(ex)}")
                 progress_bar.progress((idx + 1) / total_items)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
         status_text.empty()
         progress_bar.empty()
@@ -3631,9 +3881,9 @@ elif st.session_state.main_mode == "events":
                 st.rerun()
         with b_btn2:
             if st.button("🤖 結合即時指標生成草稿", use_container_width=True, key="btn_auto_synth_brief"):
-                tw_p = df_market.iloc[-1]['Close'] if df_market is not None else 0
-                tw_ma20 = df_market['MA20'].iloc[-1] if df_market is not None else 0
-                sox_chg = ((df_sox['Close'].iloc[-1] - df_sox['Close'].iloc[-2]) / df_sox['Close'].iloc[-2] * 100) if (df_sox is not None and len(df_sox) >= 2) else 0
+                tw_p = safe_float(df_market.iloc[-1]['Close']) if (df_market is not None and not df_market.empty) else 0.0
+                tw_ma20 = safe_float(df_market['MA20'].iloc[-1], tw_p) if (df_market is not None and not df_market.empty) else 0.0
+                sox_chg = ((safe_float(df_sox['Close'].iloc[-1]) - safe_float(df_sox['Close'].iloc[-2])) / (safe_float(df_sox['Close'].iloc[-2]) + 1e-9) * 100.0) if (df_sox is not None and len(df_sox) >= 2) else 0.0
                 synth_title = f"🔥 即時量化戰情：台股現報 {tw_p:,.0f} 點 vs 費半連動 ({sox_chg:+.2f}%) 關鍵位階解析"
                 synth_body = (
                     f"台股加權指數目前位於 {tw_p:,.2f} 點（月線 20MA 支撐/壓力位階：{tw_ma20:,.2f} 點），"
@@ -3731,8 +3981,6 @@ elif st.session_state.main_mode == "forex":
     st.caption(f"• 美元結構：{fx_info['dxy_trend']}")
     st.caption(f"• 日圓平倉風險：{fx_info['jpy_risk']}")
 
-    st.write("---")
-
     # 🌟 VIX 252 日歷史百分位恐慌溫度計
     st.write("---")
     st.markdown("### ⚠️ VIX 恐慌指數 ＆ 252 日歷史百分位儀表板")
@@ -3746,8 +3994,8 @@ elif st.session_state.main_mode == "forex":
     else:
         st.info("💡 目前暫時無法取得 ^VIX 歷史行情數據。")
 
-
-        st.markdown("### 📈 美元兌新台幣走勢與月線 (20MA)")
+    st.write("---")
+    st.markdown("### 📈 美元兌新台幣走勢與月線 (20MA)")
     df_usdtwd = fetch_and_calc("USDTWD=X")
     if df_usdtwd is None:
         df_usdtwd = fetch_and_calc("TWD=X")
@@ -3757,7 +4005,26 @@ elif st.session_state.main_mode == "forex":
     else:
         st.write("暫時無法取得匯率走勢。")
 
-# 盤中 30 秒自動刷新控制器 (僅在即時看盤室且使用者主動勾選時觸發，避免阻塞其他診斷分頁)
+# 盤中 30 秒非阻塞式自動刷新控制器 (僅在即時看盤室且勾選時啟動前端計時，不阻塞 Python 執行緒)
 if auto_refresh and st.session_state.get("main_mode") == "live_watch":
-    time.sleep(30)
-    st.rerun()
+    components.html(
+        """
+        <script>
+        (function() {
+            const timerId = setTimeout(function() {
+                try {
+                    const buttons = window.parent.document.querySelectorAll('button');
+                    for (let i = 0; i < buttons.length; i++) {
+                        if (buttons[i].innerText && buttons[i].innerText.includes('立即刷新即時走勢與大盤統計')) {
+                            buttons[i].click();
+                            return;
+                        }
+                    }
+                } catch (e) {}
+            }, 30000);
+        })();
+        </script>
+        """,
+        height=0,
+        width=0
+    )
