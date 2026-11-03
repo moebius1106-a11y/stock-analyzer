@@ -2106,7 +2106,7 @@ def fetch_gemini_qualitative_playbook(
 
     last_err = ""
     for m_id in candidate_models:
-        url = f"https://generativelanguage.googleapis.com/v1/models/{m_id}:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1/{model_name}:generateContent?key={api_key}"
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=(3.0, 10.0))
             if resp.status_code == 200:
