@@ -2028,8 +2028,8 @@ FUTURES_MARGIN_UPDATED_AT = "2026-10"
 FUTURES_MARGIN_SOURCE = "臺灣期貨交易所 (TAIFEX) 基準參數（人工定期校驗）"
 
 # ----------------- Gemini 3.8 輕量按鈕觸發・質化操盤劇本模組 -----------------
-GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
-GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
+GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"
+GEMINI_FALLBACK_MODEL = "gemini-1.5-flash"
 
 def get_gemini_api_key() -> str:
     """安全取得 Gemini API Key（優先讀取 st.secrets 與環境變數，其次讀取當前 Session）"""
@@ -2092,9 +2092,9 @@ def fetch_gemini_qualitative_playbook(
         f"3. 🚨 **VIX 宏觀波動與極限風控提醒**（點出當前最需提防的誘多/誘空或系統性風險）"
     )
 
-    candidate_models = [model_name]
-    if GEMINI_FALLBACK_MODEL not in candidate_models:
-        candidate_models.append(GEMINI_FALLBACK_MODEL)
+    candidate_models = [model_name, "gemini-1.5-flash", "gemini-3.8-flash"]
+    # Remove duplicates while preserving order
+    candidate_models = list(dict.fromkeys(candidate_models))
 
     headers = {"Content-Type": "application/json"}
     payload = {
