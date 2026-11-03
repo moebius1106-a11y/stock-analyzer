@@ -2028,9 +2028,8 @@ FUTURES_MARGIN_UPDATED_AT = "2026-10"
 FUTURES_MARGIN_SOURCE = "臺灣期貨交易所 (TAIFEX) 基準參數（人工定期校驗）"
 
 # ----------------- Gemini 3.8 輕量按鈕觸發・質化操盤劇本模組 -----------------
-GEMINI_DEFAULT_MODEL = "gemini-2.0-flash"
-GEMINI_FALLBACK_MODEL = "gemini-2.0-flash"
-
+GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"
+GEMINI_FALLBACK_MODEL = "gemini-3.8-flash"
 def get_gemini_api_key() -> str:
     """安全取得 Gemini API Key（優先讀取 st.secrets 與環境變數，其次讀取當前 Session）"""
     try:
