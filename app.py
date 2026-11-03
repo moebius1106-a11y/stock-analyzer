@@ -2028,7 +2028,7 @@ FUTURES_MARGIN_UPDATED_AT = "2026-10"
 FUTURES_MARGIN_SOURCE = "臺灣期貨交易所 (TAIFEX) 基準參數（人工定期校驗）"
 
 # ----------------- Gemini 3.8 輕量按鈕觸發・質化操盤劇本模組 -----------------
-GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"
+GEMINI_DEFAULT_MODEL = "gemini-2.0-flash"
 GEMINI_FALLBACK_MODEL = "gemini-1.5-flash"
 
 def get_gemini_api_key() -> str:
@@ -2092,7 +2092,7 @@ def fetch_gemini_qualitative_playbook(
         f"3. 🚨 **VIX 宏觀波動與極限風控提醒**（點出當前最需提防的誘多/誘空或系統性風險）"
     )
 
-    candidate_models = [model_name, "gemini-1.5-flash", "gemini-3.8-flash"]
+    candidate_models = [model_name, "gemini-2.0-flash", "gemini-1.5-flash"]
     # Remove duplicates while preserving order
     candidate_models = list(dict.fromkeys(candidate_models))
 
@@ -3041,10 +3041,10 @@ with st.expander("⚙️ 個人風控本金、當沖折讓與看盤備忘錄", e
     with ai_c2:
         u_gemini_model = st.selectbox(
             "首選推演模型版本",
-            options=["gemini-3.8-flash", "gemini-2.0-flash"],
+            options=["gemini-2.0-flash", "gemini-1.5-flash"],
             index=0,
             key="gemini_model_choice",
-            help="預設採用最新 gemini-3.8-flash；若金鑰權限未開通將自動平滑降級至 2.5-flash"
+            help="預設採用 gemini-2.0-flash；若金鑰權限未開通將自動平滑降級至 1.5-flash"
         )
     
     if st.button("💾 儲存本機偏好設定", use_container_width=True, key="btn_save_profile"):
