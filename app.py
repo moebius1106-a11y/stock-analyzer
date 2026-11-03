@@ -2027,9 +2027,9 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
 FUTURES_MARGIN_UPDATED_AT = "2026-10"
 FUTURES_MARGIN_SOURCE = "臺灣期貨交易所 (TAIFEX) 基準參數（人工定期校驗）"
 
-# ----------------- Gemini 3.8 輕量按鈕觸發・質化操盤劇本模組 -----------------
-GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
-GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
+# ----------------- Gemini 輕量按鈕觸發・質化操盤劇本模組 -----------------
+GEMINI_DEFAULT_MODEL = "自動最佳模型 (推薦)"
+GEMINI_FALLBACK_MODEL = "gemini-2.0-flash"
 
 def get_gemini_api_key() -> str:
     """安全取得 Gemini API Key（優先讀取 st.secrets 與環境變數，其次讀取當前 Session）"""
@@ -2042,6 +2042,32 @@ def get_gemini_api_key() -> str:
     if env_key:
         return env_key
     return str(st.session_state.get("session_gemini_api_key", "")).strip()
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_available_gemini_models(api_key: str):
+    """主動向 Google 查詢該 API Key 真正支援且開放的可用模型清單，徹底杜絕 404"""
+    if not api_key:
+        return []
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    try:
+        resp = requests.get(url, timeout=(2.5, 4.0))
+        if resp.status_code == 200:
+            data = resp.json().get("models", [])
+            valid_models = []
+            for item in data:
+                methods = item.get("supportedGenerationMethods", [])
+                if "generateContent" in methods:
+                    name = item.get("name", "").replace("models/", "").strip()
+                    if name:
+                        valid_models.append(name)
+            # 優先嘗試含 flash 的模型，其次含 pro，其他隨後
+            flashes = [m for m in valid_models if "flash" in m.lower()]
+            pros = [m for m in valid_models if "pro" in m.lower() and m not in flashes]
+            others = [m for m in valid_models if m not in flashes and m not in pros]
+            return flashes + pros + others
+    except Exception:
+        pass
+    return []
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_gemini_qualitative_playbook(
@@ -2092,9 +2118,24 @@ def fetch_gemini_qualitative_playbook(
         f"3. 🚨 **VIX 宏觀波動與極限風控提醒**（點出當前最需提防的誘多/誘空或系統性風險）"
     )
 
-    candidate_models = [model_name]
-    if GEMINI_FALLBACK_MODEL not in candidate_models:
-        candidate_models.append(GEMINI_FALLBACK_MODEL)
+    # 1. 優先從 Google 官方 ListModels 動態取得該 Key 真正開放的模型清單
+    discovered_models = get_available_gemini_models(api_key)
+    candidate_models = []
+    
+    clean_req_model = str(model_name).replace("models/", "").strip()
+    if clean_req_model and "自動" not in clean_req_model:
+        candidate_models.append(clean_req_model)
+
+    if discovered_models:
+        candidate_models.extend(discovered_models)
+    else:
+        # 若 ListModels 連線受阻，使用標準後備候選模型清單
+        candidate_models.extend([
+            "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash",
+            "gemini-1.5-flash-latest", "gemini-1.5-pro", "gemini-pro"
+        ])
+
+    candidate_models = list(dict.fromkeys(candidate_models))
 
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -2107,7 +2148,11 @@ def fetch_gemini_qualitative_playbook(
 
     last_err = ""
     for m_id in candidate_models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_id}:generateContent?key={api_key}"
+        clean_model = m_id.replace("models/", "").strip()
+        if not clean_model:
+            continue
+        # 嚴格依照 Google 官方 REST API 規格組裝路徑：/v1beta/models/{clean_model}:generateContent
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent?key={api_key}"
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=(3.0, 10.0))
             if resp.status_code == 200:
@@ -2116,11 +2161,11 @@ def fetch_gemini_qualitative_playbook(
                 if candidates:
                     parts = candidates[0].get("content", {}).get("parts", [])
                     if parts and "text" in parts[0]:
-                        model_badge = f"*(由 `{m_id}` 模型即時推演・30分鐘快取保護中)*\n\n"
+                        model_badge = f"*(由 `{clean_model}` 模型即時推演・30分鐘快取保護中)*\n\n"
                         return True, model_badge + parts[0]["text"].strip()
-                last_err = f"模型 `{m_id}` 回傳內容為空。"
+                last_err = f"模型 `{clean_model}` 回傳內容為空。"
             elif resp.status_code in (404, 400) and m_id != candidate_models[-1]:
-                # 若指定之 3.8 模型在該金鑰區域尚未開通，自動平滑降級至 fallback 模型
+                # 若當前模型不支援或下架，平滑降級嘗試下一個有效模型
                 continue
             elif resp.status_code == 429:
                 return False, "⚠️ Gemini API 呼叫頻率達上限 (HTTP 429 Quota Exceeded)，請稍候幾分鐘再試。"
@@ -2694,10 +2739,10 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
 
 
     # ★ 輕量按鈕觸發：Gemini 3.8 AI 質化操盤劇本解讀
-    with st.expander("🤖 【Gemini 3.8 首席操盤手・質化劇本解讀 (輕量按需觸發)】", expanded=False):
+    with st.expander("🤖 【Gemini 首席操盤手・質化劇本解讀 (輕量按需觸發)】", expanded=False):
         st.caption("⚡ **零記憶體負擔・不干預確定性算術**：點擊下方按鈕後才呼叫雲端模型，針對當前技術位階、VIX 恐慌分位與外電進行質化劇本推演（內建 30 分鐘快取保護，不重複消耗 API 額度）。")
         ai_cache_key = f"ai_playbook_res_{stable_key_suffix}"
-        if st.button("🚀 呼叫 Gemini 3.8 生成即時多空應變劇本", type="primary", use_container_width=True, key=f"btn_gemini_{stable_key_suffix}"):
+        if st.button("🚀 呼叫 Gemini 生成即時多空應變劇本", type="primary", use_container_width=True, key=f"btn_gemini_{stable_key_suffix}"):
             with st.spinner("連線 Gemini 3.8 進行跨維度質化劇本推演中..."):
                 vix_d = fetch_vix_percentile()
                 vix_p_val = safe_float(vix_d.get("vix_price"), 18.0) if vix_d.get("has_data") else 18.0
@@ -3041,10 +3086,10 @@ with st.expander("⚙️ 個人風控本金、當沖折讓與看盤備忘錄", e
     with ai_c2:
         u_gemini_model = st.selectbox(
             "首選推演模型版本",
-            options=["gemini-3.8-flash", "gemini-2.5-flash"],
+            options=["自動最佳模型 (推薦)", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"],
             index=0,
             key="gemini_model_choice",
-            help="預設採用最新 gemini-3.8-flash；若金鑰權限未開通將自動平滑降級至 2.5-flash"
+            help="預設自動向 Google 查詢並套用您金鑰可用之最佳模型；若失敗會自動平滑降級備援"
         )
     
     if st.button("💾 儲存本機偏好設定", use_container_width=True, key="btn_save_profile"):
