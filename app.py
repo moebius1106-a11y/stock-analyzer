@@ -3041,7 +3041,7 @@ with st.expander("⚙️ 個人風控本金、當沖折讓與看盤備忘錄", e
     with ai_c2:
         u_gemini_model = st.selectbox(
             "首選推演模型版本",
-            options=["gemini-3.8-flash", "gemini-2.5-flash"],
+            options=["gemini-3.8-flash", "gemini-2.0-flash"],
             index=0,
             key="gemini_model_choice",
             help="預設採用最新 gemini-3.8-flash；若金鑰權限未開通將自動平滑降級至 2.5-flash"
