@@ -307,6 +307,7 @@ def get_default_settings():
         "risk_pct": 1.0,
         "daytrade_fee_discount": 0.28,
         "personal_note": "",
+        "font_scale": "舒適護眼大字 (115%・推薦)",
         "last_active": datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M")
     }
 
@@ -333,6 +334,9 @@ def validate_and_sanitize_settings(data, default_s=None):
     sanitized["daytrade_fee_discount"] = max(min(val_disc, 1.0), 0.10)
     
     sanitized["personal_note"] = str(data.get("personal_note", ""))[:500]
+    valid_scales = ["標準字體 (100%)", "舒適護眼大字 (115%・推薦)", "清晰長輩超大字 (130%)"]
+    raw_scale = str(data.get("font_scale", default_s.get("font_scale", "舒適護眼大字 (115%・推薦)")))
+    sanitized["font_scale"] = raw_scale if raw_scale in valid_scales else "舒適護眼大字 (115%・推薦)"
     
     for list_key in ["tw_favorites", "tw_recent", "us_favorites", "us_recent"]:
         raw_list = data.get(list_key, default_s[list_key])
@@ -3341,6 +3345,53 @@ if "etf_category_filter" not in st.session_state:
 
 user_memory = get_user_data()
 
+# ★ iPhone / 手機端字體大小動態調整與護眼引擎 (避免長時間盯盤眼睛疲勞)
+curr_font_scale = user_memory.get("font_scale", "舒適護眼大字 (115%・推薦)")
+if "130%" in curr_font_scale:
+    st.markdown("""
+    <style>
+        html, body, p, span, div, input, textarea {
+            font-size: 1.15rem !important;
+            line-height: 1.65 !important;
+        }
+        h1 { font-size: 1.65rem !important; }
+        h2 { font-size: 1.45rem !important; }
+        h3 { font-size: 1.30rem !important; }
+        div[data-testid="stMetricValue"] { font-size: 1.55rem !important; font-weight: 800 !important; }
+        div[data-testid="stMetricLabel"] { font-size: 1.05rem !important; font-weight: 700 !important; }
+        div.stButton > button, div[data-testid="stFormSubmitButton"] > button {
+            font-size: 1.12rem !important;
+            min-height: 3.1rem !important;
+        }
+        .yahoo-stat-box, .macro-alert-card, .daytrade-card, .inst-report-box {
+            font-size: 1.08rem !important;
+            line-height: 1.75 !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+elif "115%" in curr_font_scale:
+    st.markdown("""
+    <style>
+        html, body, p, span, div, input, textarea {
+            font-size: 1.05rem !important;
+            line-height: 1.55 !important;
+        }
+        h1 { font-size: 1.50rem !important; }
+        h2 { font-size: 1.30rem !important; }
+        h3 { font-size: 1.15rem !important; }
+        div[data-testid="stMetricValue"] { font-size: 1.40rem !important; font-weight: 800 !important; }
+        div[data-testid="stMetricLabel"] { font-size: 0.96rem !important; font-weight: 700 !important; }
+        div.stButton > button, div[data-testid="stFormSubmitButton"] > button {
+            font-size: 1.02rem !important;
+            min-height: 2.85rem !important;
+        }
+        .yahoo-stat-box, .macro-alert-card, .daytrade-card, .inst-report-box {
+            font-size: 0.98rem !important;
+            line-height: 1.65 !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
 # ★ 自動更新置頂戰情焦點（免手動釘選）
 current_briefing = get_auto_market_briefing(df_market, df_sox, global_forex)
 
@@ -3360,6 +3411,12 @@ with st.expander("⚙️ 個人風控本金、當沖折讓與看盤備忘錄", e
         u_risk = st.number_input("單筆風險(%)", min_value=0.5, max_value=5.0, value=float(user_memory.get("risk_pct", 1.0)), step=0.1, key="prof_risk")
 
     u_disc = st.slider("當沖券商手續費折讓（例如 2.8 折輸入 0.28）", min_value=0.10, max_value=1.00, value=float(user_memory.get("daytrade_fee_discount", 0.28)), step=0.01, key="prof_disc")
+    
+    font_scale_opts = ["舒適護眼大字 (115%・推薦)", "清晰長輩超大字 (130%)", "標準字體 (100%)"]
+    saved_font_scale = user_memory.get("font_scale", "舒適護眼大字 (115%・推薦)")
+    def_font_idx = font_scale_opts.index(saved_font_scale) if saved_font_scale in font_scale_opts else 0
+    u_font = st.selectbox("👀 iPhone / 手機專用字體大小調節 (護眼防眼睛疲勞)", options=font_scale_opts, index=def_font_idx, key="prof_font_scale_choice", help="專為手機與 iPhone 高解析螢幕打造：放大即時報價、指標與分析文字，不瞇眼長時間看盤更舒適")
+    
     u_note = st.text_area("📝 個人看盤備忘錄", value=user_memory.get("personal_note", ""), height=68, key="prof_note")
 
     st.write("---")
@@ -3388,6 +3445,7 @@ with st.expander("⚙️ 個人風控本金、當沖折讓與看盤備忘錄", e
         user_memory["capital_us"] = u_cap_us
         user_memory["risk_pct"] = u_risk
         user_memory["daytrade_fee_discount"] = u_disc
+        user_memory["font_scale"] = u_font
         user_memory["personal_note"] = u_note
         if u_gemini_key.strip():
             st.session_state["session_gemini_api_key"] = u_gemini_key.strip()
@@ -3412,14 +3470,18 @@ with st.expander("📦 匯出 / 匯入設定備份碼（防雲端休眠重置）
             logging.warning(f"還原備份碼解析失敗: {e}")
             st.error(f"備份碼格式錯誤：{str(e)}")
 
-with st.expander("📘 點此查看【系統現行版本完整功能清單與版本說明 (V9.6)】", expanded=False):
+with st.expander("📘 點此查看【系統現行版本完整功能清單與版本說明 (V9.7 護眼升級版)】", expanded=False):
     st.markdown("""
     ### 🌟 系統定位與核心架構
     本系統為**跨市場全維度量化決策平台**，整合臺灣證券交易所 (TWSE) 官方即時撮合、臺灣銀行官方牌告匯率、Google 財經全頻道即時外電 RSS、華爾街四大權威機構研究模組、**美股夜盤/ADR即時監控**、**次日股市漲跌多重情境預測方案 (A/B/C/D)** 與**當沖實戰決策室（VWAP/CDP/ORB突破/保本跳動計算）**。
 
     ---
-    ### 🛠️ 核心功能模組總覽 (最新 V9.6 釋出標註)
-    1. **🔮 次日開市漲跌多重情境預測方案 (A/B/C/D 精準 % 數模型) [NEW]**：
+    ### 🛠️ 核心功能模組總覽 (最新 V9.7 護眼升級標註)
+    1. **👀 iPhone / 手機專用字體三段式放大調節 ＆ 護眼引擎 [NEW]**：
+       - **防視力疲勞設計**：專為 iPhone Retina 高解析螢幕與眼睛易疲勞使用者打造，預設啟用「舒適護眼大字 (115%)」，並提供「清晰長輩超大字 (130%)」與「標準 (100%)」自由切換。
+       - **全系統自適應縮放**：連動放大即時報價 (stMetric)、按鈕點擊區域、五檔盤口深度條、戰情廣播卡片與即時外電文字，徹底告別手機瞇眼看盤。
+       - **記憶體持久化**：字體偏好設定自動儲存於 `user_settings.json` 與備份碼中，重整或重開網頁自動套用。
+    2. **🔮 次日開市漲跌多重情境預測方案 (A/B/C/D 精準 % 數模型)**：
        - **多因子敏感度加權**：整合台積電 ADR (35%)、費半 SOXX (15%)、微型那指期貨 (15%) 與 10 年美債殖利率 (3%)。
        - **政策籌碼增益**：納入金管會限空令（借券賣出上限砍至 3%、融券保證金 130%）與國安基金授權效應。
        - **四大情境動態推演**：方案 A（極致樂觀軋空）、方案 B（常態開高走堅）、方案 C（拉高震盪整理）、方案 D（美股翻黑政策底防禦），提供精確漲跌 % 數、指數點位區間、發生機率與對應操盤軍規。
