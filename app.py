@@ -160,6 +160,20 @@ st.markdown("""
         background-color: rgba(128, 128, 128, 0.05) !important;
         padding: 0.45rem 0.75rem !important;
     }
+    /* 保護摺疊箭頭圖示專用字型，嚴禁字型覆寫產生 _arrow_right / _arrow_down 文字 */
+    [data-testid="stExpanderToggleIcon"],
+    [data-testid="stExpanderToggleIcon"] * {
+        font-family: "Material Symbols Rounded", "Material Icons" !important;
+        font-style: normal !important;
+        font-weight: normal !important;
+        text-transform: none !important;
+        letter-spacing: normal !important;
+        word-wrap: normal !important;
+        white-space: nowrap !important;
+        direction: ltr !important;
+        -webkit-font-smoothing: antialiased !important;
+        text-rendering: optimizeLegibility !important;
+    }
 
     .yahoo-stat-box {
         background-color: rgba(128, 128, 128, 0.06);
@@ -3345,17 +3359,47 @@ if "etf_category_filter" not in st.session_state:
 
 user_memory = get_user_data()
 
-# ★ 雙系統手機專用字體縮放與護眼引擎 (iOS / Android 跨平台全面適配・防眼睛疲勞)
+# ★ 雙系統手機專用字體縮放與護眼引擎 (已徹底修復圖示文字化異常，iOS / Android 完美相容)
 curr_font_scale = user_memory.get("font_scale", "舒適護眼大字 (115%・推薦)")
+
+# 核心防護：嚴禁任何樣式覆寫 Streamlit 摺疊選單圖示字型，確保箭頭永遠正確顯示為圖示
+st.markdown("""
+<style>
+    /* 保障 Streamlit 摺疊圖示與所有系統圖示永遠正常顯示，杜絕 _arrow_right / _arrow_down 跑版 */
+    [data-testid="stExpanderToggleIcon"],
+    [data-testid="stExpanderToggleIcon"] span,
+    [data-testid="stExpanderToggleIcon"] i,
+    .material-symbols-rounded,
+    .material-symbols-sharp,
+    .material-symbols-outlined,
+    [class*="material-symbols"] {
+        font-family: "Material Symbols Rounded", "Material Icons", sans-serif !important;
+        font-weight: normal !important;
+        font-style: normal !important;
+        line-height: 1 !important;
+        letter-spacing: normal !important;
+        text-transform: none !important;
+        display: inline-block !important;
+        white-space: nowrap !important;
+        word-wrap: normal !important;
+        direction: ltr !important;
+        -webkit-font-feature-settings: 'liga' 1 !important;
+        font-feature-settings: 'liga' 1 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 if "130%" in curr_font_scale:
     st.markdown("""
     <style>
-        html, body, p, span, div, input, textarea {
-            font-size: 1.15rem !important;
-            line-height: 1.68 !important;
+        html, body {
             -webkit-text-size-adjust: 100% !important;
             text-size-adjust: 100% !important;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif !important;
+        }
+        p, li, [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li, .stCaption, small {
+            font-size: 1.15rem !important;
+            line-height: 1.68 !important;
         }
         h1 { font-size: 1.68rem !important; }
         h2 { font-size: 1.48rem !important; }
@@ -3366,6 +3410,12 @@ if "130%" in curr_font_scale:
             font-size: 1.12rem !important;
             min-height: 3.1rem !important;
         }
+        .streamlit-expanderHeader {
+            font-size: 1.15rem !important;
+        }
+        .streamlit-expanderHeader p {
+            font-size: 1.15rem !important;
+        }
         .yahoo-stat-box, .macro-alert-card, .daytrade-card, .inst-report-box {
             font-size: 1.08rem !important;
             line-height: 1.75 !important;
@@ -3375,12 +3425,14 @@ if "130%" in curr_font_scale:
 elif "115%" in curr_font_scale:
     st.markdown("""
     <style>
-        html, body, p, span, div, input, textarea {
-            font-size: 1.05rem !important;
-            line-height: 1.58 !important;
+        html, body {
             -webkit-text-size-adjust: 100% !important;
             text-size-adjust: 100% !important;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif !important;
+        }
+        p, li, [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li, .stCaption, small {
+            font-size: 1.05rem !important;
+            line-height: 1.58 !important;
         }
         h1 { font-size: 1.52rem !important; }
         h2 { font-size: 1.32rem !important; }
@@ -3390,6 +3442,12 @@ elif "115%" in curr_font_scale:
         div.stButton > button, div[data-testid="stFormSubmitButton"] > button {
             font-size: 1.04rem !important;
             min-height: 2.85rem !important;
+        }
+        .streamlit-expanderHeader {
+            font-size: 1.06rem !important;
+        }
+        .streamlit-expanderHeader p {
+            font-size: 1.06rem !important;
         }
         .yahoo-stat-box, .macro-alert-card, .daytrade-card, .inst-report-box {
             font-size: 1.00rem !important;
