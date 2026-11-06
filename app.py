@@ -3345,20 +3345,23 @@ if "etf_category_filter" not in st.session_state:
 
 user_memory = get_user_data()
 
-# ★ iPhone / 手機端字體大小動態調整與護眼引擎 (避免長時間盯盤眼睛疲勞)
+# ★ 雙系統手機專用字體縮放與護眼引擎 (iOS / Android 跨平台全面適配・防眼睛疲勞)
 curr_font_scale = user_memory.get("font_scale", "舒適護眼大字 (115%・推薦)")
 if "130%" in curr_font_scale:
     st.markdown("""
     <style>
         html, body, p, span, div, input, textarea {
             font-size: 1.15rem !important;
-            line-height: 1.65 !important;
+            line-height: 1.68 !important;
+            -webkit-text-size-adjust: 100% !important;
+            text-size-adjust: 100% !important;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif !important;
         }
-        h1 { font-size: 1.65rem !important; }
-        h2 { font-size: 1.45rem !important; }
-        h3 { font-size: 1.30rem !important; }
-        div[data-testid="stMetricValue"] { font-size: 1.55rem !important; font-weight: 800 !important; }
-        div[data-testid="stMetricLabel"] { font-size: 1.05rem !important; font-weight: 700 !important; }
+        h1 { font-size: 1.68rem !important; }
+        h2 { font-size: 1.48rem !important; }
+        h3 { font-size: 1.32rem !important; }
+        div[data-testid="stMetricValue"] { font-size: 1.58rem !important; font-weight: 800 !important; }
+        div[data-testid="stMetricLabel"] { font-size: 1.06rem !important; font-weight: 700 !important; }
         div.stButton > button, div[data-testid="stFormSubmitButton"] > button {
             font-size: 1.12rem !important;
             min-height: 3.1rem !important;
@@ -3374,20 +3377,23 @@ elif "115%" in curr_font_scale:
     <style>
         html, body, p, span, div, input, textarea {
             font-size: 1.05rem !important;
-            line-height: 1.55 !important;
+            line-height: 1.58 !important;
+            -webkit-text-size-adjust: 100% !important;
+            text-size-adjust: 100% !important;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif !important;
         }
-        h1 { font-size: 1.50rem !important; }
-        h2 { font-size: 1.30rem !important; }
-        h3 { font-size: 1.15rem !important; }
-        div[data-testid="stMetricValue"] { font-size: 1.40rem !important; font-weight: 800 !important; }
-        div[data-testid="stMetricLabel"] { font-size: 0.96rem !important; font-weight: 700 !important; }
+        h1 { font-size: 1.52rem !important; }
+        h2 { font-size: 1.32rem !important; }
+        h3 { font-size: 1.18rem !important; }
+        div[data-testid="stMetricValue"] { font-size: 1.42rem !important; font-weight: 800 !important; }
+        div[data-testid="stMetricLabel"] { font-size: 0.98rem !important; font-weight: 700 !important; }
         div.stButton > button, div[data-testid="stFormSubmitButton"] > button {
-            font-size: 1.02rem !important;
+            font-size: 1.04rem !important;
             min-height: 2.85rem !important;
         }
         .yahoo-stat-box, .macro-alert-card, .daytrade-card, .inst-report-box {
-            font-size: 0.98rem !important;
-            line-height: 1.65 !important;
+            font-size: 1.00rem !important;
+            line-height: 1.68 !important;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -3415,7 +3421,7 @@ with st.expander("⚙️ 個人風控本金、當沖折讓與看盤備忘錄", e
     font_scale_opts = ["舒適護眼大字 (115%・推薦)", "清晰長輩超大字 (130%)", "標準字體 (100%)"]
     saved_font_scale = user_memory.get("font_scale", "舒適護眼大字 (115%・推薦)")
     def_font_idx = font_scale_opts.index(saved_font_scale) if saved_font_scale in font_scale_opts else 0
-    u_font = st.selectbox("👀 iPhone / 手機專用字體大小調節 (護眼防眼睛疲勞)", options=font_scale_opts, index=def_font_idx, key="prof_font_scale_choice", help="專為手機與 iPhone 高解析螢幕打造：放大即時報價、指標與分析文字，不瞇眼長時間看盤更舒適")
+    u_font = st.selectbox("👀 雙系統手機專用字體縮放・護眼調節 (iOS / Android 通用)", options=font_scale_opts, index=def_font_idx, key="prof_font_scale_choice", help="專為 iPhone (iOS) 與安卓 (Android) 手機高解析螢幕量身打造：自動適配系統繁中字型，放大即時報價、指標與分析文字，不瞇眼長時間看盤更舒適")
     
     u_note = st.text_area("📝 個人看盤備忘錄", value=user_memory.get("personal_note", ""), height=68, key="prof_note")
 
@@ -3470,41 +3476,41 @@ with st.expander("📦 匯出 / 匯入設定備份碼（防雲端休眠重置）
             logging.warning(f"還原備份碼解析失敗: {e}")
             st.error(f"備份碼格式錯誤：{str(e)}")
 
-with st.expander("📘 點此查看【系統現行版本完整功能清單與版本說明 (V9.7 護眼升級版)】", expanded=False):
+with st.expander("📘 點此查看【系統現行版本完整功能清單與版本說明 (V9.8 雙系統護眼旗艦版)】", expanded=False):
     st.markdown("""
     ### 🌟 系統定位與核心架構
     本系統為**跨市場全維度量化決策平台**，整合臺灣證券交易所 (TWSE) 官方即時撮合、臺灣銀行官方牌告匯率、Google 財經全頻道即時外電 RSS、華爾街四大權威機構研究模組、**美股夜盤/ADR即時監控**、**次日股市漲跌多重情境預測方案 (A/B/C/D)** 與**當沖實戰決策室（VWAP/CDP/ORB突破/保本跳動計算）**。
 
     ---
-    ### 🛠️ 核心功能模組總覽 (最新 V9.7 護眼升級標註)
-    1. **👀 iPhone / 手機專用字體三段式放大調節 ＆ 護眼引擎 [NEW]**：
-       - **防視力疲勞設計**：專為 iPhone Retina 高解析螢幕與眼睛易疲勞使用者打造，預設啟用「舒適護眼大字 (115%)」，並提供「清晰長輩超大字 (130%)」與「標準 (100%)」自由切換。
-       - **全系統自適應縮放**：連動放大即時報價 (stMetric)、按鈕點擊區域、五檔盤口深度條、戰情廣播卡片與即時外電文字，徹底告別手機瞇眼看盤。
-       - **記憶體持久化**：字體偏好設定自動儲存於 `user_settings.json` 與備份碼中，重整或重開網頁自動套用。
-    2. **🔮 次日開市漲跌多重情境預測方案 (A/B/C/D 精準 % 數模型)**：
+    ### 🛠️ 核心功能模組總覽 (最新 V9.8 雙系統護眼釋出標註)
+    1. **👀 雙系統手機專用字體縮放 ＆ 護眼引擎 (iOS / Android 通用) [NEW]**：
+       - **跨平台防視力疲勞設計**：專為 iPhone (iOS) 與安卓 (Android) 高解析手機螢幕量身打造，自動適配系統繁中字型棧，預設啟用「舒適護眼大字 (115%)」，並提供「清晰長輩超大字 (130%)」與「標準 (100%)」自由即時切換。
+       - **全系統自適應縮放**：連動放大即時報價 (stMetric)、按鈕點擊熱區、五檔盤口深度條、戰情廣播卡片與即時外電文字，排版自動擴展不擠壓，徹底告別手機瞇眼看盤。
+       - **輕量與持久化**：純客戶端 CSS 渲染，伺服器零負擔、零崩潰風險；字體偏好自動儲存於 `user_settings.json` 與備份碼中，重整自動套用。
+    2. **🔮 次日開市漲跌多重情境預測方案 (A/B/C/D 精準 % 數模型) [NEW]**：
        - **多因子敏感度加權**：整合台積電 ADR (35%)、費半 SOXX (15%)、微型那指期貨 (15%) 與 10 年美債殖利率 (3%)。
        - **政策籌碼增益**：納入金管會限空令（借券賣出上限砍至 3%、融券保證金 130%）與國安基金授權效應。
        - **四大情境動態推演**：方案 A（極致樂觀軋空）、方案 B（常態開高走堅）、方案 C（拉高震盪整理）、方案 D（美股翻黑政策底防禦），提供精確漲跌 % 數、指數點位區間、發生機率與對應操盤軍規。
-    2. **📰 全頻道即時外電情報匯流中心 (含彭博 / LINE TODAY / 路透社) [NEW]**：
+    3. **📰 全頻道即時外電情報匯流中心 (含彭博 / LINE TODAY / 路透社) [NEW]**：
        - 整合八大情報頻道：彭博社 Bloomberg、LINE TODAY 財經、路透社 Reuters、國內權威財經（鉅亨/經濟/工商）、半導體AI、宏觀利率、台股籌碼與美股巨頭。
        - 支援自由輸入自訂關鍵字速查，5 分鐘 TTL 快取保護（單次請求僅 30KB），完全零伺服器負擔且杜絕 429 限流。
        - 支援一鍵「📌 置頂」任何感興趣的外電至首頁頂部戰情廣播卡片。
-    3. **🌐 美股大盤、台積電 ADR 與三大指標即時監控看板 [NEW]**：
+    4. **🌐 美股大盤、台積電 ADR 與三大指標即時監控看板 [NEW]**：
        - 即時連線台積電 ADR (TSM)、費半 ETF (SOXX)、輝達 (NVDA)、那指期貨 (NQ) 與 10 年美債 (^TNX)。
        - 自適應雙欄排版，徹底解決手機螢幕文字被擠壓為省略號問題。
        - 內建 TSM 370 美元鐵底防線自動化多空警報燈號。
-    4. **📈 分時走勢圖（含昨收平盤線 ＆ VWAP 均價）手機橫向自由滑動 [NEW]**：
+    5. **📈 分時走勢圖（含昨收平盤線 ＆ VWAP 均價）手機橫向自由滑動 [NEW]**：
        - 解除全域寬度限制，注入專屬滑動容器樣式（`touch-action: pan-x`、`overflow-x: auto`）。
        - 手機端支援手指平滑向左／向右滑動，完整查看開盤至最新分鐘的完整 K 線與均價。
-    5. **⚡ 當沖實戰決策室（VWAP生命線・ORB突破・CDP五關卡・保本跳動計算）**：
+    6. **⚡ 當沖實戰決策室（VWAP生命線・ORB突破・CDP五關卡・保本跳動計算）**：
        - **VWAP 典型價格均價線**：盤中多空第一分水嶺。
        - **ORB 15分K高低突破**：開盤主力表態順勢多空信號。
        - **CDP 逆勢五關卡價**：依前日日K高低收精確定位 AH、NH、CDP、NL、AL。
        - **當沖保本檔位計算機**：自動依股價級距換算損益兩平跳動檔位（含 0.15% 減半證交稅與券商折讓）。
        - **尾盤平倉倒數計時**：13:00 啟動提醒、13:20 強制清倉警報。
-    6. **🏛️ 四大華爾街級權威機構深度研究套件**：
+    7. **🏛️ 四大華爾街級權威機構深度研究套件**：
        - 財務分析（三率/現金流）、股票研究（多維估值/目標價）、財報分析（營收EPS/驚奇度）、市場研究（籌碼/Alpha）。
-    7. **📋 證交所即時五檔盤口深度**：
+    8. **📋 證交所即時五檔盤口深度**：
        - 雙向深度能量條看板，視覺化呈現委買委賣厚度。
     """)
 
