@@ -443,8 +443,25 @@ def save_market_briefing(title: str, content: str, author: str, is_manual: bool 
         pass
     return new_b
 
-@st.cache_data(ttl=180)
-def fetch_live_macro_rss(query_str: str = "台股 OR 美股 OR CPI OR 聯準會 OR 台積電 OR 費半"):
+# ----------------- 全頻道即時外電情報站核心引擎 (彭博/LINE TODAY/路透/台美股・5分鐘快取隔離) -----------------
+GLOBAL_NEWS_CHANNELS = {
+    "📰 彭博社 Bloomberg": "彭博 OR Bloomberg 財經 OR 彭博新聞",
+    "💬 LINE TODAY 財經": "LINE TODAY 財經 OR LINE TODAY 理財 OR LINE TODAY 股市",
+    "🌐 路透社 Reuters": "路透 OR Reuters 財經 OR 路透社",
+    "🇹🇼 國內主流權威財經": "鉅亨網 OR 經濟日報 OR 工商時報 台股",
+    "🔥 科技與半導體 (AI)": "台積電 OR 輝達 OR 費城半導體 OR NVDA OR TSM OR ASML OR AI伺服器",
+    "🏛️ 宏觀總經與利率": "聯準會 OR CPI OR 美債殖利率 OR 降息 OR 非農 OR 國安基金",
+    "⚡ 台股與籌碼期指": "台股 OR 加權指數 OR 外資買賣超 OR 台指期 OR 限空令 OR 官股",
+    "🇺🇸 華爾街美股焦點": "美股 OR 那斯達克 OR 標普500 OR 科技股財報 OR 特斯拉"
+}
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_categorized_news(query_str: str, max_items: int = 15):
+    """
+    極低資源消耗外電聚合引擎：
+    - 5 分鐘伺服器快取保護 (TTL=300)
+    - 輕量純 XML 解析 (單次小於 40KB，完全免伺服器重度負擔)
+    """
     encoded_q = quote(query_str)
     url = f"https://news.google.com/rss/search?q={encoded_q}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -453,21 +470,78 @@ def fetch_live_macro_rss(query_str: str = "台股 OR 美股 OR CPI OR 聯準會 
         r = requests.get(url, headers=headers, timeout=(2.0, 3.5))
         if r.status_code == 200:
             root = ET.fromstring(r.content)
-            for item in root.findall("./channel/item")[:8]:
+            for item in root.findall("./channel/item")[:max_items]:
                 title = item.findtext("title", default="無標題")
                 link = item.findtext("link", default="#")
                 pub_date = item.findtext("pubDate", default="")
                 source_el = item.find("source")
-                source_name = source_el.text if source_el is not None else "財經快訊"
+                source_name = source_el.text if source_el is not None else "外電快訊"
+                clean_date = pub_date[:22] if pub_date else "即時"
                 items.append({
                     "title": title,
                     "link": link,
                     "source": source_name,
-                    "pub_date": pub_date[:22] if pub_date else "即時"
+                    "pub_date": clean_date
                 })
     except Exception:
         pass
     return items
+
+@st.cache_data(ttl=180, show_spinner=False)
+def fetch_live_macro_rss(query_str: str = "台股 OR 美股 OR CPI OR 聯準會 OR 台積電 OR 費半"):
+    return fetch_categorized_news(query_str, max_items=8)
+
+def render_news_hub_widget(show_pin_btn: bool = False, key_prefix: str = "hub"):
+    """
+    全頻道即時外電情報站 UI 渲染器 (支援彭博、LINE TODAY、路透、國內權威財經切換、關鍵字搜尋與即時手動刷新)
+    """
+    c_sel, c_refresh = st.columns([3.0, 1.0])
+    with c_sel:
+        channel_names = list(GLOBAL_NEWS_CHANNELS.keys())
+        selected_ch = st.selectbox(
+            "選擇即時外電情報頻道",
+            channel_names,
+            index=0,
+            key=f"{key_prefix}_channel_select",
+            label_visibility="collapsed"
+        )
+    with c_refresh:
+        if st.button("🔄 刷新外電", key=f"{key_prefix}_btn_refresh_news", use_container_width=True):
+            fetch_categorized_news.clear()
+            fetch_live_macro_rss.clear()
+            st.rerun()
+
+    custom_q = st.text_input(
+        "自訂關鍵字速查",
+        placeholder="🔍 或輸入自訂關鍵字（例：彭博、LINE TODAY、ASML、美超微、降息...）",
+        key=f"{key_prefix}_custom_query_in",
+        label_visibility="collapsed"
+    )
+
+    active_query = custom_q.strip() if custom_q.strip() else GLOBAL_NEWS_CHANNELS[selected_ch]
+    articles = fetch_categorized_news(active_query, max_items=12)
+
+    if articles:
+        st.caption(f"📡 目前檢索來源：`{active_query}` ｜ 共取得 {len(articles)} 則最新即時外電")
+        for idx_a, a_item in enumerate(articles):
+            with st.container():
+                st.markdown(f"• **[{a_item['title']}]({a_item['link']})**")
+                c_inf1, c_inf2 = st.columns([3.0, 1.0])
+                with c_inf1:
+                    st.caption(f"📢 來源：`{a_item['source']}` ｜ 發布：`{a_item['pub_date']}`")
+                with c_inf2:
+                    if show_pin_btn:
+                        if st.button("📌 置頂", key=f"{key_prefix}_pin_{idx_a}", use_container_width=True, help="鎖定此新聞為首頁頂部戰情焦點"):
+                            save_market_briefing(
+                                f"🔥 外電快訊：{a_item['title'][:28]}...",
+                                f"【外電焦點】{a_item['title']}（來源：{a_item['source']} ｜ {a_item['pub_date']}）\n\n請密切留意該事件對台指期夜盤、美股科技股與次日開盤跳空之連動影響。",
+                                "外電戰情中心",
+                                is_manual=True
+                            )
+                            st.rerun()
+                st.write("---")
+    else:
+        st.info("⚪ 目前暫無該關鍵字或頻道之即時外電，請稍候再試或點擊「🔄 刷新外電」。")
 
 def get_auto_market_briefing(df_market_obj, df_sox_obj, forex_obj):
     cur_saved = load_market_briefing()
@@ -3440,13 +3514,9 @@ if st.session_state.main_mode == "live_watch":
     """, unsafe_allow_html=True)
 
     st.write("---")
-    st.markdown("### 🌐 即時市場焦點與總經快訊 (Google 財經即時連線)")
-    live_rss = fetch_live_macro_rss("台股 OR 費半 OR CPI OR 聯準會 OR 台積電")
-    if live_rss:
-        for r_item in live_rss[:5]:
-            st.markdown(f"• **[{r_item['title']}]({r_item['link']})** — `{r_item['source']}` ({r_item['pub_date']})")
-    else:
-        st.caption("目前暫無即時外電快訊。")
+    with st.expander("📰 【全頻道即時外電情報站】(支援彭博／LINE TODAY／路透／台美股)", expanded=True):
+        st.caption("即時匯流彭博社 (Bloomberg)、LINE TODAY 財經、路透社 (Reuters) 與國內權威財經外電")
+        render_news_hub_widget(show_pin_btn=False, key_prefix="live_m0")
 
 # ================= 模式 1：🔍 台股診斷 =================
 elif st.session_state.main_mode == "tw_stock":
@@ -4045,32 +4115,9 @@ elif st.session_state.main_mode == "events":
 
     st.write("---")
 
-    st.markdown("### 🌐 總經與市場焦點外電即時導入 (Google News RSS)")
-    rss_q1, rss_q2 = st.columns(2)
-    with rss_q1:
-        if st.button("🔥 台股 / 費半 / 台積電", use_container_width=True, key="rss_btn_tw"):
-            st.session_state.rss_query = "台股 OR 費半 OR 台積電"
-    with rss_q2:
-        if st.button("🇺🇸 美國 CPI / 聯準會 / 美股", use_container_width=True, key="rss_btn_us"):
-            st.session_state.rss_query = "美國 CPI OR 聯準會 OR 那斯達克"
-
-    cur_rss_q = st.session_state.get("rss_query", "台股 OR 美國 CPI OR 費半 OR 台積電")
-    rss_items = fetch_live_macro_rss(cur_rss_q)
-    if rss_items:
-        for idx_r, r_it in enumerate(rss_items):
-            with st.container():
-                st.markdown(f"**[{r_it['title']}]({r_it['link']})**")
-                c_r1, c_r2 = st.columns([2.5, 1.5])
-                c_r1.caption(f"來源：{r_it['source']} ｜ {r_it['pub_date']}")
-                if c_r2.button("📌 手動鎖定為置頂", key=f"pin_rss_{idx_r}", use_container_width=True):
-                    save_market_briefing(
-                        f"🔥 市場快訊：{r_it['title'][:28]}...",
-                        f"【外電焦點】{r_it['title']}（來源：{r_it['source']}）\n\n請密切留意該事件對台指期夜盤、美股科技股與次日開盤跳空幅度之連動影響。",
-                        "系統策略中心",
-                        is_manual=True
-                    )
-                    st.rerun()
-                st.write("---")
+    st.markdown("### 🌐 全頻道即時外電情報匯流中心 (含彭博 / LINE TODAY / 路透社)")
+    st.caption("整合全球八大外電情報頻道，支援一鍵手動鎖定置頂焦點至首頁戰情廣播卡片")
+    render_news_hub_widget(show_pin_btn=True, key_prefix="events_m7")
 
     st.markdown("### 🔍 個股最新重大訊息速查")
     col_n_input, col_n_btn = st.columns([2.4, 1.6])
