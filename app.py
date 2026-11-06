@@ -1845,6 +1845,78 @@ def analyze_forex_data():
     return res
 
 @st.cache_data(ttl=120, show_spinner=False)
+
+
+# ----------------- 美股夜盤與核心指標即時監控模組 -----------------
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_us_live_indicators():
+    """抓取美股即時大盤、ADR 與美債殖利率指標"""
+    targets = [
+        ("台積電 ADR", "TSM", "$"),
+        ("費半 ETF", "SOXX", "$"),
+        ("輝達 NVDA", "NVDA", "$"),
+        ("那指期貨", "NQ=F", "點"),
+        ("10年美債", "^TNX", "%")
+    ]
+    data = []
+    for label, sym, unit in targets:
+        try:
+            t = yf.Ticker(sym)
+            hist = t.history(period="2d", interval="1m")
+            if hist is None or hist.empty or len(hist) < 2:
+                hist = t.history(period="5d")
+            
+            if hist is not None and not hist.empty:
+                if isinstance(hist.columns, pd.MultiIndex):
+                    hist.columns = hist.columns.get_level_values(0)
+                cur = safe_float(hist['Close'].iloc[-1])
+                prev = safe_float(t.info.get("previousClose") if t.info else None)
+                if prev <= 0 and len(hist) >= 2:
+                    prev = safe_float(hist['Close'].iloc[-2], cur)
+                if prev <= 0:
+                    prev = cur
+                diff = cur - prev
+                pct = (diff / (prev + 1e-9)) * 100.0
+                data.append({
+                    "label": label, "symbol": sym, "unit": unit,
+                    "price": cur, "diff": diff, "pct": pct
+                })
+        except Exception:
+            continue
+    return data
+
+def render_us_live_dashboard():
+    """渲染美股夜盤與即時指標卡片看板"""
+    with st.expander("🌐 【美股大盤、ADR 與三大關鍵指標即時監控】", expanded=True):
+        col_hdr1, col_hdr2 = st.columns([3, 1])
+        with col_hdr1:
+            st.caption("即時連線：台積電 ADR (TSM) 370 美元鐵底防線、費半 (SOXX)、輝達 (NVDA)、那斯達克期貨 (NQ) 與 10 年期美債殖利率")
+        with col_hdr2:
+            if st.button("🔄 刷新美股", key="btn_refresh_us_live", use_container_width=True):
+                fetch_us_live_indicators.clear()
+                st.rerun()
+
+        us_data = fetch_us_live_indicators()
+        if us_data:
+            cols = st.columns(len(us_data))
+            for col, item in zip(cols, us_data):
+                val_str = f"{item['price']:.2f}%" if item["unit"] == "%" else f"{item['unit']}{item['price']:,.2f}"
+                sign = "+" if item['diff'] >= 0 else ""
+                col.metric(
+                    label=f"{item['label']} ({item['symbol']})",
+                    value=val_str,
+                    delta=f"{sign}{item['diff']:.2f} ({sign}{item['pct']:.2f}%)"
+                )
+            
+            tsm = next((x for x in us_data if x["symbol"] == "TSM"), None)
+            if tsm:
+                if tsm["price"] >= 370.0:
+                    st.success(f"✅ **台積電 ADR 現報 ${tsm['price']:.2f}**：成功守穩 **370 美元** 多方關鍵防線！下週一金管會限空令（借券上限 3%）生效，外資面臨強迫軋空回補。")
+                else:
+                    st.warning(f"⚠️ **台積電 ADR 現報 ${tsm['price']:.2f}**：跌破 370 美元防線，下週一開盤啟動千點內政策防禦機制。")
+        else:
+            st.info("⚪ 目前外部美股撮合連線中，請稍候或點擊右上角刷新。")
+
 def preload_global_benchmarks():
     tickers = ["^TWII", "WTX=F", "TSM", "^SOX", "^GSPC"]
     results = {}
@@ -3155,6 +3227,10 @@ st.markdown(f"""
     </div>
 </div>
 """, unsafe_allow_html=True)
+
+# ★ 美股大盤與核心指標即時監控看板
+render_us_live_dashboard()
+
 
 st.link_button(
     "🌐 前往：台股技術量化與美股隔夜風險中心 (Vercel 外部系統)",
