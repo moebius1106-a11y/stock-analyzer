@@ -12,6 +12,17 @@ import json
 import os
 import re
 import time
+import uuid
+from ai_research_agents import (
+    AI_RESEARCH_AGENT_SPECS,
+    compute_weekly_technicals,
+    compute_enhanced_backtest_metrics,
+    run_portfolio_stress_test,
+    analyze_trading_journal_stats,
+    run_gemini_research_agent,
+    render_stock_ai_agents_expander,
+    render_ai_research_hub_mode,
+)
 import streamlit.components.v1 as components
 from urllib.parse import quote
 from datetime import datetime, timezone, timedelta
@@ -368,28 +379,35 @@ def validate_and_sanitize_settings(data, default_s=None):
     sanitized["last_active"] = str(data.get("last_active", datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M")))[:25]
     return sanitized
 
+def get_session_settings_path() -> str:
+    if "session_uid" not in st.session_state:
+        st.session_state.session_uid = uuid.uuid4().hex[:10]
+    return f"user_settings_{st.session_state.session_uid}.json"
+
 def get_user_data():
     if "user_data" not in st.session_state:
         default_s = get_default_settings()
-        if os.path.exists(SETTINGS_FILE):
+        sess_file = get_session_settings_path()
+        if os.path.exists(sess_file):
             try:
-                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                with open(sess_file, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
                     st.session_state.user_data = validate_and_sanitize_settings(loaded, default_s)
                     return st.session_state.user_data
             except Exception as e:
-                logging.warning(f"讀取使用者設定檔異常: {e}")
+                logging.warning(f"讀取隔離使用者設定檔異常: {e}")
         st.session_state.user_data = default_s.copy()
     return st.session_state.user_data
 
 def save_user_data():
     if "user_data" in st.session_state:
         try:
+            sess_file = get_session_settings_path()
             st.session_state.user_data["last_active"] = datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M")
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            with open(sess_file, "w", encoding="utf-8") as f:
                 json.dump(st.session_state.user_data, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(f"寫入隔離使用者設定檔異常: {e}")
 
 def add_recent_history(market: str, ticker: str):
     data = get_user_data()
@@ -1060,10 +1078,10 @@ def calc_orb_levels(df_intra):
             }
 
         last_time_str = str(regular_bars['TimeStr'].iloc[-1])
-        orb_window = regular_bars[(regular_bars['TimeStr'] >= '09:00') & (regular_bars['TimeStr'] <= '09:15')]
+        orb_window = regular_bars[(regular_bars['TimeStr'] >= '09:00') & (regular_bars['TimeStr'] < '09:15')]
 
         # 1. 在 09:15 K 棒完全收定前（最新時間戳記未推進至 09:15 之後），嚴禁提前觸發突破訊號
-        if last_time_str <= '09:15':
+        if last_time_str < '09:15':
             return {
                 "orb_high": safe_float(orb_window['High'].max(), curr_p) if not orb_window.empty else curr_p,
                 "orb_low": safe_float(orb_window['Low'].min(), curr_p) if not orb_window.empty else curr_p,
@@ -1770,8 +1788,8 @@ def analyze_opening_and_ma(df_stock, live_info=None):
     }
 
     if not has_ma20:
-        ma_alignment = "⏳ 歷史樣本未滿 20 日 (均線暖機資料累積中)"
-        ma_score = 8
+        ma_alignment = "⏳ 歷史樣本未滿 20 日 (均線暖機未完成，系統阻斷買進)"
+        ma_score = 0
     elif has_ma60 and close > ma5 > ma20 > ma60:
         ma_alignment = "🔥 完美多頭排列 (價格 > 日線 > 月線 > 季線)"
         ma_score = 25
@@ -1951,9 +1969,6 @@ def analyze_forex_data():
 
     return res
 
-@st.cache_data(ttl=120, show_spinner=False)
-
-
 # ----------------- 美股夜盤與核心指標即時監控模組 -----------------
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_us_live_indicators():
@@ -1992,128 +2007,143 @@ def fetch_us_live_indicators():
             continue
     return data
 
-def render_next_day_forecast_panel(us_data, tw_base_index=40000.0):
-    """根據美股指標、台積電 ADR 與金管會政策籌碼計算隔日多重情境預測"""
-    factor_changes = {"TSM": 0.0, "SOXX": 0.0, "NQ": 0.0, "TNX": 0.0}
-    tsm_price = 0.0
-    
-    if us_data:
-        for item in us_data:
-            sym = item.get("symbol", "")
-            pct = item.get("pct", 0.0)
-            if sym == "TSM":
-                factor_changes["TSM"] = pct
-                tsm_price = item.get("price", 0.0)
-            elif sym in ("SOXX", "^SOX"):
-                factor_changes["SOXX"] = pct
-            elif "NQ" in sym:
-                factor_changes["NQ"] = pct
-            elif "^TNX" in sym:
-                factor_changes["TNX"] = -pct
+def render_next_day_forecast_panel(us_data, tw_base_index: float = 0.0):
+    """根據美股前瞻指標與加權指數動態基準推演次日開市情境（含缺漏防護與權重免責）"""
+    if not us_data:
+        st.info("⚪ 目前美股行情撮合中，暫無足夠指標建立次日開市預測。")
+        return
 
-    # 權重敏感度換算: 台積電約佔大盤 35%
+    factor_changes = {}
+    missing_items = []
+    target_map = {
+        "TSM": "台積電 ADR",
+        "SOXX": "費城半導體 ETF",
+        "NQ=F": "那斯達克期貨",
+        "^TNX": "10年美債殖利率",
+    }
+    data_dict = {item.get("symbol"): item for item in us_data}
+
+    for sym, label in target_map.items():
+        if sym in data_dict and safe_float(data_dict[sym].get("price")) > 0:
+            factor_changes[sym] = safe_float(data_dict[sym].get("pct"), 0.0)
+        else:
+            missing_items.append(f"{label} ({sym})")
+
+    # 指標防護：TSM、SOXX、NQ、TNX 缺漏達 2 項以上或缺少 TSM 時，暫停預測
+    if len(missing_items) >= 2 or "TSM" not in factor_changes:
+        st.warning(
+            f"⚠️ **關鍵前瞻指標資料不足，暫停次日開盤預測**（缺少：{', '.join(missing_items)}）。"
+            f"系統已自動阻斷不完整資料下的點位推算。"
+        )
+        return
+
+    tsm_pct = factor_changes.get("TSM", 0.0)
+    soxx_pct = factor_changes.get("SOXX", 0.0)
+    nq_pct = factor_changes.get("NQ=F", 0.0)
+    tnx_pct = factor_changes.get("^TNX", 0.0)
+
+    # 綜合敏感度加權換算（不帶入無即時驗證之寫死政策加分）
     tw_weighted_jump = (
-        factor_changes["TSM"] * 0.35 +
-        factor_changes["SOXX"] * 0.15 +
-        factor_changes["NQ"] * 0.15 +
-        (factor_changes["TNX"] * 0.03 if factor_changes["TNX"] < 0 else 0.0)
+        (tsm_pct * 0.35)
+        + (soxx_pct * 0.15)
+        + (nq_pct * 0.15)
+        + ((-tnx_pct * 0.03) if tnx_pct > 0 else 0.0)
     )
-    
-    # 政策底限空令強制軋空增益
-    policy_bonus = 0.35 if (tsm_price >= 370.0 and tw_weighted_jump > 0) else 0.0
-    base_center = tw_weighted_jump + policy_bonus
 
-    if base_center >= 1.5:
-        p_a = (base_center * 1.05, max(base_center * 1.35, base_center + 0.8))
-        p_b = (base_center * 0.70, base_center * 1.00)
-        p_c = (max(base_center * 0.25, 0.4), base_center * 0.65)
-        p_d = (-1.80, -0.50)
-    elif base_center >= 0:
-        p_a = (base_center + 0.8, base_center + 1.8)
-        p_b = (base_center, base_center + 0.8)
-        p_c = (0.1, base_center)
-        p_d = (-1.50, -0.40)
-    else:
-        p_a = (0.5, 1.5)
-        p_b = (-0.5, 0.5)
-        p_c = (base_center - 0.5, base_center)
-        p_d = (max(base_center * 1.5, -2.5), -1.0)
-
-    # 機率權重
-    if tsm_price >= 370.0 and factor_changes["SOXX"] >= 2.0:
-        prob_a, prob_b, prob_c, prob_d = 75, 15, 7, 3
-    elif tsm_price >= 370.0:
-        prob_a, prob_b, prob_c, prob_d = 60, 25, 10, 5
+    if tw_weighted_jump >= 1.2:
+        p_a = (tw_weighted_jump * 1.05, tw_weighted_jump * 1.35)
+        p_b = (tw_weighted_jump * 0.70, tw_weighted_jump * 1.00)
+        p_c = (0.20, tw_weighted_jump * 0.60)
+        p_d = (-1.20, -0.30)
+        w_a, w_b, w_c, w_d = 55, 30, 10, 5
     elif tw_weighted_jump >= 0:
-        prob_a, prob_b, prob_c, prob_d = 40, 40, 15, 5
+        p_a = (tw_weighted_jump + 0.60, tw_weighted_jump + 1.20)
+        p_b = (tw_weighted_jump, tw_weighted_jump + 0.60)
+        p_c = (-0.20, tw_weighted_jump)
+        p_d = (-1.00, -0.30)
+        w_a, w_b, w_c, w_d = 25, 45, 20, 10
     else:
-        prob_a, prob_b, prob_c, prob_d = 10, 25, 45, 20
+        p_a = (0.30, 0.80)
+        p_b = (-0.40, 0.40)
+        p_c = (tw_weighted_jump - 0.50, tw_weighted_jump)
+        p_d = (tw_weighted_jump * 1.30, tw_weighted_jump * 0.80)
+        w_a, w_b, w_c, w_d = 10, 20, 45, 25
+
+    has_tw_pts = tw_base_index > 1000.0
 
     plans = [
         {
-            "name": "方案 A：極致樂觀・政策底強迫軋空",
-            "desc": "台積電 ADR 守穩 370 美元鐵底，限空令掐死 90% 借券賣壓，外資與造市商被迫早盤掛市價回補，大盤報復性跳空大漲。",
+            "name": "方案 A：強勢動能・跳空突破",
+            "desc": "美股科技族群大幅走強，ADR 與期指同步共振，多方早盤強攻開出。",
             "pct_range": p_a,
-            "pts_range": (tw_base_index * p_a[0] / 100.0, tw_base_index * p_a[1] / 100.0),
-            "prob": prob_a,
-            "badge": "🔥 機率最高 (75~80%)" if prob_a >= 60 else "⭐ 攻擊情境",
+            "weight": w_a,
+            "badge": "🔥 動能偏強" if w_a >= 50 else "⭐ 攻擊情境",
             "tag_color": "#e53935",
-            "action": "嚴禁開盤追高；趁衝高將 0050正二等槓桿工具果斷出清，台積電零股逢拉抬至缺口反壓分批落袋，保留 7 成防禦現金。"
+            "action": "嚴禁開盤盲目追高；觀察開盤 15 分 K (ORB) 站穩均價線 (VWAP) 後再順勢評估。"
         },
         {
-            "name": "方案 B：常態修復・開高震盪走堅",
-            "desc": "美股反彈動能延續，跳空開高後遇部分解套賣盤換手，國安基金穩健托底權值股，維持穩健紅盤格局。",
+            "name": "方案 B：常態開高・震盪換手",
+            "desc": "美股反彈動能溫和，早盤開高後面臨短線獲利調節賣壓，回測均線支撐。",
             "pct_range": p_b,
-            "pts_range": (tw_base_index * p_b[0] / 100.0, tw_base_index * p_b[1] / 100.0),
-            "prob": prob_b,
+            "weight": w_b,
             "badge": "🟢 常態情境",
             "tag_color": "#43a047",
-            "action": "觀察開盤 15 分 K (ORB) 高低點表態與分時 VWAP 均價線，嚴守個股停損點，不隨意追單。"
+            "action": "逢回檔測試昨收或月線有守再行布局，嚴守個股停損點。"
         },
         {
             "name": "方案 C：拉高遇壓・漲幅收斂整理",
-            "desc": "早盤跳空開高後引發前波套牢賣壓與隔日沖獲利調節，多方追價意願謹慎，盤勢於高檔陷入橫盤拉鋸。",
+            "desc": "早盤開高後追價買盤意願謹慎，盤中量能萎縮轉為區間橫盤拉鋸。",
             "pct_range": p_c,
-            "pts_range": (tw_base_index * p_c[0] / 100.0, tw_base_index * p_c[1] / 100.0),
-            "prob": prob_c,
+            "weight": w_c,
             "badge": "🟡 震盪整理",
             "tag_color": "#ff9800",
-            "action": "把握開盤衝高契機順勢調節弱勢部位，耐心等待盤勢築出第二隻腳再重新評估。"
+            "action": "把握反彈契機適度調節弱勢部位，保留現金部位耐心等待表態。"
         },
         {
-            "name": "方案 D：美股回落・政策防禦鎖定跌幅",
-            "desc": "若美股尾盤突發翻黑，但因限空令已封死借券賣壓，國安基金首要托底台積電，跌幅被強制封鎖在千點以內。",
+            "name": "方案 D：外圍回落・回測下檔支撐",
+            "desc": "外圍期指翻黑或美債殖利率突揚，早盤開低考驗下檔均線與整數關卡防守力道。",
             "pct_range": p_d,
-            "pts_range": (tw_base_index * p_d[0] / 100.0, tw_base_index * p_d[1] / 100.0),
-            "prob": prob_d,
-            "badge": "🛡️ 政策底防線",
+            "weight": w_d,
+            "badge": "🛡️ 防守情境",
             "tag_color": "#1a73e8",
-            "action": "全面啟動防禦機制，絕不逆勢攤平；嚴守 7 成現金儲備，靜待恐慌殺盤釋放完畢。"
+            "action": "啟動防禦紀律，嚴禁逆勢摸底攤平；未出現止跌訊號前維持低持股水位。"
         }
     ]
 
     st.write("---")
-    st.markdown("#### 🔮 【次日開市漲跌預測 % 數與多重情境方案模型】")
-    st.caption("綜合美股夜盤因子（TSM 35%、SOXX 15%、NQ 15%、美債 3%）與金管會限空令籌碼模型精確測算：")
+    st.markdown("#### 🔮 【次日開市漲跌預測 % 數與多重情境推演模型】")
+    idx_status_str = (
+        f"加權指數動態基準：`{tw_base_index:,.1f}` 點"
+        if has_tw_pts
+        else "（加權指數連線中，暫僅提供漲跌百分比推算）"
+    )
+    st.caption(f"因子敏感度：TSM 35% ｜ SOXX 15% ｜ NQ 15% ｜ 美債 3% ｜ {idx_status_str}")
+
     for plan in plans:
+        pts_html = ""
+        if has_tw_pts:
+            low_pts = tw_base_index * plan['pct_range'][0] / 100.0
+            high_pts = tw_base_index * plan['pct_range'][1] / 100.0
+            pts_html = f"<span style='font-size:0.85rem; font-weight:400; color:#666;'>(約 {low_pts:+,.0f} ～ {high_pts:+,.0f} 點)</span>"
+
         st.markdown(f"""
         <div style="background: rgba(128,128,128,0.05); border-left: 4px solid {plan['tag_color']}; border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 0.5rem;">
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <b style="color:{plan['tag_color']}; font-size:0.96rem;">{plan['name']}</b>
-                <span style="font-size:0.8rem; background:rgba(128,128,128,0.12); padding:2px 8px; border-radius:12px;"><b>機率：{plan['prob']}%</b> ｜ {plan['badge']}</span>
+                <span style="font-size:0.8rem; background:rgba(128,128,128,0.12); padding:2px 8px; border-radius:12px;">模型參考權重：<b>{plan['weight']}%</b> ｜ {plan['badge']}</span>
             </div>
-            <div style="margin: 0.35rem 0; font-size:1.1rem; font-weight:700; color:{plan['tag_color']};">
-                預估漲跌：{plan['pct_range'][0]:+.2f}% ～ {plan['pct_range'][1]:+.2f}% 
-                <span style="font-size:0.85rem; font-weight:400; color:#666;">(約 {plan['pts_range'][0]:+,.0f} ～ {plan['pts_range'][1]:+,.0f} 點)</span>
+            <div style="margin: 0.35rem 0; font-size:1.06rem; font-weight:700; color:{plan['tag_color']};">
+                預估漲跌：{plan['pct_range'][0]:+.2f}% ～ {plan['pct_range'][1]:+.2f}% {pts_html}
             </div>
             <div style="font-size:0.88rem; color:#444; line-height:1.45; margin-bottom:0.25rem;">
-                • <b>籌碼結構</b>：{plan['desc']}
+                • <b>盤勢結構</b>：{plan['desc']}
             </div>
             <div style="font-size:0.88rem; color:#2e7d32; line-height:1.45;">
                 • <b>操盤軍規</b>：{plan['action']}
             </div>
         </div>
         """, unsafe_allow_html=True)
+    st.caption("📌 **免責說明**：本情境權重為基於美股即時隔夜連動之敏感度模擬參考值，非真實歷史勝率保證。")
 
 def render_us_live_dashboard():
     """渲染美股夜盤與即時指標卡片看板（自適應雙欄，解決手機寬度擠壓問題）"""
@@ -2128,7 +2158,6 @@ def render_us_live_dashboard():
 
         us_data = fetch_us_live_indicators()
         if us_data:
-            # 依 2 欄一列排版，手機端寬裕展示，絕不擠壓
             for i in range(0, len(us_data), 2):
                 chunk = us_data[i:i+2]
                 cols = st.columns(2)
@@ -2141,15 +2170,23 @@ def render_us_live_dashboard():
                         delta=f"{sign}{item['diff']:.2f} ({sign}{item['pct']:.2f}%)"
                     )
 
-            tsm = next((x for x in us_data if x["symbol"] == "TSM"), None)
-            if tsm:
-                if tsm["price"] >= 370.0:
-                    st.success(f"✅ **台積電 ADR 現報 ${tsm['price']:.2f}**：成功守穩 **370 美元** 多方關鍵防線！下週一金管會限空令（借券上限 3%）生效，外資面臨強迫軋空回補。")
-                else:
-                    st.warning(f"⚠️ **台積電 ADR 現報 ${tsm['price']:.2f}**：跌破 370 美元防線，下週一開盤啟動千點內政策防禦機制。")
+            # 動態取得最新加權指數點位與時間作為換算基準（優先 TWSE MIS，其次 Yahoo ^TWII）
+            live_tw_base = 0.0
+            tw_quote_meta = "Yahoo Finance 延遲報價"
+            try:
+                dash_snap = fetch_twse_market_dashboard()
+                if dash_snap and safe_float(dash_snap.get("twii_price")) > 1000.0:
+                    live_tw_base = safe_float(dash_snap["twii_price"])
+                    tw_quote_meta = f"TWSE 證交所 ({dash_snap.get('data_time', '即時/收盤')})"
+                elif "df_market" in globals() and df_market is not None and not df_market.empty:
+                    live_tw_base = safe_float(df_market.iloc[-1]["Close"], 0.0)
+                    last_dt_s = str(df_market.index[-1])[:10]
+                    tw_quote_meta = f"Yahoo Finance ({last_dt_s} 收盤・延遲行情)"
+            except Exception as e:
+                logging.warning(f"取得加權指數基準異常: {e}")
 
-            # ★ 即時推演隔日開市漲跌預測 % 數與多重情境方案
-            render_next_day_forecast_panel(us_data)
+            st.caption(f"🕒 **行情基準來源**：{tw_quote_meta} ｜ 美股數據：Yahoo Finance 跨市場報價（含盤前/盤後延遲提示）")
+            render_next_day_forecast_panel(us_data, tw_base_index=live_tw_base)
         else:
             st.info("⚪ 目前外部美股撮合連線中，請稍候或點擊右上角刷新。")
 
@@ -2285,9 +2322,11 @@ def analyze_full_stock(ticker, df_stock, df_market, df_futures, df_tsm, df_sox, 
         tech_part = tech_subtotal * (95.0 / 85.0)
         total_score = int(tech_part + analyst_bonus)
 
-    total_score = min(max(total_score, 0), 100)
-
     has_stk_ma20 = pd.notna(last_stk.get('MA20'))
+    if not has_stk_ma20:
+        total_score = min(max(total_score, 0), 49)
+    else:
+        total_score = min(max(total_score, 0), 100)
     ma20_val = safe_float(last_stk.get('MA20'), close * 0.96) if has_stk_ma20 else (close * 0.96)
     if (not has_stk_ma20) or (close >= ma20_val):
         raw_stop = max(close - 2.0 * atr_val, ma20_val - 0.5 * atr_val)
@@ -2336,7 +2375,7 @@ FUTURES_MARGIN_UPDATED_AT = "2026-10"
 FUTURES_MARGIN_SOURCE = "臺灣期貨交易所 (TAIFEX) 基準參數（人工定期校驗）"
 
 # ----------------- Gemini 輕量按鈕觸發・質化操盤劇本模組 -----------------
-GEMINI_DEFAULT_MODEL = "自動最佳模型 (推薦)"
+GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
 GEMINI_FALLBACK_MODEL = "gemini-2.0-flash"
 
 def get_gemini_api_key() -> str:
@@ -2353,12 +2392,13 @@ def get_gemini_api_key() -> str:
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_available_gemini_models(api_key: str):
-    """主動向 Google 查詢該 API Key 真正支援且開放的可用模型清單，徹底杜絕 404"""
+    """使用安全 Header 向 Google 查詢可用現代模型清單，過濾已淘汰舊版模型"""
     if not api_key:
         return []
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    url = "https://generativelanguage.googleapis.com/v1beta/models"
+    headers = {"x-goog-api-key": api_key}
     try:
-        resp = requests.get(url, timeout=(2.5, 4.0))
+        resp = requests.get(url, headers=headers, timeout=(2.5, 4.0))
         if resp.status_code == 200:
             data = resp.json().get("models", [])
             valid_models = []
@@ -2366,16 +2406,14 @@ def get_available_gemini_models(api_key: str):
                 methods = item.get("supportedGenerationMethods", [])
                 if "generateContent" in methods:
                     name = item.get("name", "").replace("models/", "").strip()
-                    if name:
+                    if name and not any(old in name.lower() for old in ["1.5", "1.0", "gemini-pro"]):
                         valid_models.append(name)
-            # 優先嘗試含 flash 的模型，其次含 pro，其他隨後
             flashes = [m for m in valid_models if "flash" in m.lower()]
             pros = [m for m in valid_models if "pro" in m.lower() and m not in flashes]
-            others = [m for m in valid_models if m not in flashes and m not in pros]
-            return flashes + pros + others
-    except Exception:
-        pass
-    return []
+            return flashes + pros
+    except Exception as e:
+        logging.warning(f"ListModels 連線異常: {e}")
+    return [GEMINI_DEFAULT_MODEL, GEMINI_FALLBACK_MODEL]
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_gemini_qualitative_playbook(
@@ -2397,7 +2435,7 @@ def fetch_gemini_qualitative_playbook(
     news_titles_tuple: tuple
 ):
     """
-    輕量級 Gemini API 質化劇本解讀（30分鐘快取隔離，不佔用本機 RAM、不干預確定性算術與風控數字）
+    輕量級 Gemini API 質化劇本解讀（使用 x-goog-api-key 安全 Header + 30分鐘快取隔離）
     """
     if not api_key:
         return False, "⚠️ 尚未設定 Gemini API Key。請展開頁面頂部「⚙️ 個人風控本金、當沖折讓與看盤備忘錄」填入金鑰，或於 Streamlit Secrets 設定 `GEMINI_API_KEY`。"
@@ -2426,26 +2464,17 @@ def fetch_gemini_qualitative_playbook(
         f"3. 🚨 **VIX 宏觀波動與極限風控提醒**（點出當前最需提防的誘多/誘空或系統性風險）"
     )
 
-    # 1. 優先從 Google 官方 ListModels 動態取得該 Key 真正開放的模型清單
-    discovered_models = get_available_gemini_models(api_key)
-    candidate_models = []
-    
+    discovered = get_available_gemini_models(api_key) if (not model_name or "自動" in str(model_name)) else []
     clean_req_model = str(model_name).replace("models/", "").strip()
-    if clean_req_model and "自動" not in clean_req_model:
-        candidate_models.append(clean_req_model)
+    if not clean_req_model or "自動" in clean_req_model or any(old in clean_req_model.lower() for old in ["1.5", "1.0", "gemini-pro"]):
+        clean_req_model = discovered[0] if discovered else GEMINI_DEFAULT_MODEL
 
-    if discovered_models:
-        candidate_models.extend(discovered_models)
-    else:
-        # 若 ListModels 連線受阻，使用標準後備候選模型清單
-        candidate_models.extend([
-            "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash",
-            "gemini-1.5-flash-latest", "gemini-1.5-pro", "gemini-pro"
-        ])
+    candidate_models = list(dict.fromkeys([clean_req_model] + discovered + [GEMINI_DEFAULT_MODEL, GEMINI_FALLBACK_MODEL]))
 
-    candidate_models = list(dict.fromkeys(candidate_models))
-
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "x-goog-api-key": api_key,
+        "Content-Type": "application/json"
+    }
     payload = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
@@ -2455,14 +2484,10 @@ def fetch_gemini_qualitative_playbook(
     }
 
     last_err = ""
-    for m_id in candidate_models:
-        clean_model = m_id.replace("models/", "").strip()
-        if not clean_model:
-            continue
-        # 嚴格依照 Google 官方 REST API 規格組裝路徑：/v1beta/models/{clean_model}:generateContent
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent?key={api_key}"
+    for clean_model in candidate_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent"
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=(3.0, 10.0))
+            resp = requests.post(url, headers=headers, json=payload, timeout=(3.5, 12.0))
             if resp.status_code == 200:
                 r_json = resp.json()
                 candidates = r_json.get("candidates", [])
@@ -2472,15 +2497,22 @@ def fetch_gemini_qualitative_playbook(
                         model_badge = f"*(由 `{clean_model}` 模型即時推演・30分鐘快取保護中)*\n\n"
                         return True, model_badge + parts[0]["text"].strip()
                 last_err = f"模型 `{clean_model}` 回傳內容為空。"
-            elif resp.status_code in (404, 400) and m_id != candidate_models[-1]:
-                # 若當前模型不支援或下架，平滑降級嘗試下一個有效模型
-                continue
+            elif resp.status_code in (401, 403):
+                return False, "⚠️ Gemini API Key 無效或未開通權限 (HTTP 401/403)。"
             elif resp.status_code == 429:
                 return False, "⚠️ Gemini API 呼叫頻率達上限 (HTTP 429 Quota Exceeded)，請稍候幾分鐘再試。"
+            elif resp.status_code == 404:
+                last_err = f"模型 `{clean_model}` 不存在 (HTTP 404)"
+                continue
+            elif resp.status_code >= 500:
+                last_err = f"Google 雲端服務暫時異常 (HTTP {resp.status_code})"
+                continue
             else:
-                err_msg = resp.text[:160]
-                last_err = f"HTTP {resp.status_code}: {err_msg}"
+                last_err = f"HTTP {resp.status_code}: {resp.text[:140]}"
+        except requests.Timeout:
+            last_err = f"連線 `{clean_model}` 逾時 (Timeout)"
         except Exception as e:
+            logging.warning(f"Gemini Playbook 連線異常 ({clean_model}): {e}")
             last_err = f"連線逾時或網路異常 ({str(e)})"
 
     return False, f"⚠️ Gemini AI 暫時無法回應（{last_err}）。系統量化指標與下單風控計算機均維持正常運作。"
@@ -3021,7 +3053,9 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
 
         st.write("---")
         st.markdown(f"### 📋 【精確{unit_name}下單執行卡】")
-        if is_spot_fallback:
+        if not has_ma20_flag:
+            st.warning("⏳ **【MA20 指標暖機中・阻斷買進建議】**：歷史樣本未滿 20 個交易日，月線生命線尚未建立。系統已自動阻斷進場點位與買進建議，請維持空手觀察（建議部位：0）。")
+        elif is_spot_fallback:
             st.error("🚨 **【現貨參考模式・停用期貨下單建議】**：外部行情庫暫無此期貨即時撮合數據，目前點位走勢引自加權指數現貨。為防範實盤風控風險，**已停用本卡片之期貨下單點位、停損停利試算與建議口數**！請俟取得真實期貨撮合後再行下單。")
         elif is_downtrend:
             st.error(f"🚫 **當前禁止做多**：現價（{close:.2f} {currency_sym}）已跌破月線生命線（{res['ma_status']['ma20_val']:.2f} {currency_sym}），空方控盤，順勢交易者嚴禁逆勢摸底！若持有部位，建議退場防守價設為 `{res['stop_loss']:.2f} {currency_sym}`。")
@@ -3035,7 +3069,10 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
             """)
 
     with st.expander("📝 【決策結論與多空架構】", expanded=False):
-        if is_downtrend:
+        if not has_ma20_flag:
+            st.warning("### ⏳ 觀察（MA20 暖機未滿 20 筆）：均線資料累積中，阻斷買進建議，部位維持 0")
+            st.write("- 由於歷史 K 線樣本尚未達 20 筆，月線（20MA）生命線無法精確計算，為避免訊號失真，請先觀望待資料充足。")
+        elif is_downtrend:
             st.error(f"### 🔴 空方架構：現價（{close:.2f} {currency_sym}）跌破月線生命線（{res['ma_status']['ma20_val']:.2f} {currency_sym}），嚴禁追價摸底！")
             st.write(f"- 當前價位位於月線（20MA）之下，短中期均線蓋頭下壓，等待止跌築底翻揚再行介入。建議防守價位：**{res['stop_loss']:.2f} {currency_sym}**。")
         elif res['total_score'] >= 75:
@@ -3084,6 +3121,20 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
                 st.info(ai_text)
             else:
                 st.warning(ai_text)
+
+    # ★ 掛載八大機構級 AI 研究員工作站 (交易點子 / 日週線技術 / 回測審計 / 財報追問 / 反方審查)
+    _vix_snap = fetch_vix_percentile()
+    _news_snap = fetch_stock_news(ticker_raw) if (ticker_raw and mode_type != "futures") else []
+    render_stock_ai_agents_expander(
+        res=res,
+        df_asset=df_asset,
+        ticker_raw=str(ticker_raw or "MARKET"),
+        mode_type=mode_type,
+        api_key=get_gemini_api_key(),
+        model_name=str(st.session_state.get("gemini_model_choice", GEMINI_DEFAULT_MODEL)),
+        vix_info=_vix_snap,
+        news_items=_news_snap,
+    )
 
     # ★ 十大技術指標 Check-list 計分儀表板
     with st.expander("📊 【十大技術指標 Check-list 儀表板】量化多空逐項檢視", expanded=False):
@@ -3214,7 +3265,9 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
                 st.write(f"• {r}")
 
     with st.expander("🚪 【階梯式分階出場 SOP】", expanded=False):
-        if is_spot_fallback:
+        if not has_ma20_flag:
+            st.info("⏳ 目前處於 MA20 指標暖機階段（資料未滿 20 筆），暫不提供波段進出場目標價位，建議部位為 0。")
+        elif is_spot_fallback:
             st.info("⚪ 目前處於現貨參考模式，請俟取得真實期貨合約撮合點位後再行規劃進出場目標。")
         elif is_downtrend:
             st.warning(f"🚫 空方弱勢架構：現價已跌破月線（20MA），系統暫停提供多單目標，嚴禁逆勢摸底做多！持有部位請嚴格以防守點位 **`{res['stop_loss']:.2f}` {currency_sym}** 退場止血。")
@@ -3269,7 +3322,16 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
         potential_reward = max(res['target_60d'] - close, 0)
         rr_ratio = potential_reward / risk_unit if risk_unit > 0 else 0
 
-        if is_spot_fallback:
+        if not has_ma20_flag:
+            suggested_pos = 0
+            st.error("🚫 **MA20 暖機未滿 20 筆**：均線生命線尚未建立，系統已全面阻斷買進建議，建議進場部位強制歸 **0**。")
+            b1, b2 = st.columns(2)
+            b1.metric("單筆最大容許虧損", f"{int(max_risk_dollar):,} 元" if mode_type != "us" else f"{int(max_risk_dollar):,} USD")
+            b2.metric("建議進場數量", f"0 {unit_name}")
+            b3, b4 = st.columns(2)
+            b3.metric("多方目標獲利區", "--")
+            b4.metric("預期盈虧比 (R/R)", "--")
+        elif is_spot_fallback:
             st.warning("⚪ **現貨參考模式**：由於未能取得真實期貨合約撮合報價，已停用自動可下口數試算與保證金槓桿建議。")
         elif is_downtrend:
             st.warning(f"⚠️ **空方弱勢警示**：目前處於跌破月線格局，系統建議進場數量為 **0 {unit_name}**（觀望為宜）。若依個人風控上限計算，最多承受規模為 **{suggested_pos} {unit_name}**。")
@@ -3287,24 +3349,19 @@ def render_analysis_view(res, df_asset, mode_type="tw", custom_spec=None, fallba
             b3.metric("目標獲利區", f"{res['target_60d']:.1f} {currency_sym}")
             b4.metric("預期盈虧比 (R/R)", f"{rr_ratio:.2f} : 1")
 
-    with st.expander(f"📊 【過去 1 年{unit_name}策略回測數據 (簡化歷史模擬)】", expanded=False):
-        bt = backtest_strategy(df_asset, market_type=mode_type)
-        if bt:
-            bt1, bt2 = st.columns(2)
-            bt1.metric("近 1 年訊號次數", f"{bt['count']} 次")
-            bt2.metric("持有 5 日勝率", f"{bt['win_rate']:.1f}%")
-            if mode_type == "futures":
-                fee_note = "已扣除期指交易稅與點數滑價摩擦成本"
-            elif mode_type == "us":
-                fee_note = "已扣除 0.1% 美股摩擦成本"
-            else:
-                fee_note = "已扣除 0.45% 台股稅費"
-            bt3, bt4 = st.columns(2)
-            bt3.metric("平均淨報酬率", f"{bt['avg_return']:+.2f}%", help=fee_note)
-            bt4.metric("簡化交易回撤 (MDD)", f"{bt['mdd']:.2f}%", help="依固定持有期交易序列計算之最大峰谷回撤，未含逐日持倉估值、盤中滑價與保證金追繳路徑")
-            st.caption(f"📌 單部位循序進出（持倉中不重複進場）、單次最差交易：`{bt['worst_loss']:.2f}%`")
+    with st.expander(f"📊 【過去 1 年{unit_name}策略回測數據 (無前視偏誤模擬)】", expanded=False):
+        bt_adv = compute_enhanced_backtest_metrics(df_asset, market_type=mode_type, hold_days=5)
+        if bt_adv.get("has_data"):
+            bt1, bt2, bt3 = st.columns(3)
+            bt1.metric("訊號交易次數", f"{bt_adv['trade_count']} 次")
+            bt2.metric("持有 5 日勝率", f"{bt_adv['win_rate_pct']:.1f}%")
+            bt3.metric("獲利因子 (PF)", f"{bt_adv['profit_factor']:.2f}")
+            bt4, bt5 = st.columns(2)
+            bt4.metric("平均淨報酬率", f"{bt_adv['avg_return_pct']:+.2f}%", help=bt_adv["cost_assumption"])
+            bt5.metric("簡化交易回撤 (MDD)", f"{bt_adv['max_drawdown_pct']:.2f}%", help="依固定持有期交易序列計算之最大峰谷回撤，未含保證金追繳路徑")
+            st.caption(f"📌 {bt_adv['sample_warning']}（單次最佳：`{bt_adv['best_trade_pct']:+.2f}%` ｜ 單次最差：`{bt_adv['worst_trade_pct']:+.2f}%`）")
         else:
-            st.write("該標的歷史數據樣本不足以計算有效回測。")
+            st.info(bt_adv.get("reason", "該標的歷史數據樣本不足以計算有效回測。"))
 
     with st.expander("📈 【近 60 日均線 (5/20/60MA) 波段走勢圖】", expanded=False):
         valid_cols = ['Close']
@@ -3497,7 +3554,7 @@ with st.expander("⚙️ 個人風控本金、當沖折讓與看盤備忘錄", e
     with ai_c2:
         u_gemini_model = st.selectbox(
             "首選推演模型版本",
-            options=["自動最佳模型 (推薦)", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"],
+            options=["自動最佳模型 (推薦)", "gemini-2.5-flash", "gemini-2.0-flash"],
             index=0,
             key="gemini_model_choice",
             help="預設自動向 Google 查詢並套用您金鑰可用之最佳模型；若失敗會自動平滑降級備援"
@@ -3534,13 +3591,13 @@ with st.expander("📦 匯出 / 匯入設定備份碼（防雲端休眠重置）
             logging.warning(f"還原備份碼解析失敗: {e}")
             st.error(f"備份碼格式錯誤：{str(e)}")
 
-with st.expander("📘 點此查看【系統現行版本完整功能清單與版本說明 (V9.8 雙系統護眼旗艦版)】", expanded=False):
+with st.expander("📘 點此查看【系統現行版本完整功能清單與版本說明 (V9.9 旗艦機構研究版)】", expanded=False):
     st.markdown("""
     ### 🌟 系統定位與核心架構
     本系統為**跨市場全維度量化決策平台**，整合臺灣證券交易所 (TWSE) 官方即時撮合、臺灣銀行官方牌告匯率、Google 財經全頻道即時外電 RSS、華爾街四大權威機構研究模組、**美股夜盤/ADR即時監控**、**次日股市漲跌多重情境預測方案 (A/B/C/D)** 與**當沖實戰決策室（VWAP/CDP/ORB突破/保本跳動計算）**。
 
     ---
-    ### 🛠️ 核心功能模組總覽 (最新 V9.8 雙系統護眼釋出標註)
+    ### 🛠️ 核心功能模組總覽 (最新 V9.9 旗艦機構研究版釋出標註)
     1. **👀 雙系統手機專用字體縮放 ＆ 護眼引擎 (iOS / Android 通用) [NEW]**：
        - **跨平台防視力疲勞設計**：專為 iPhone (iOS) 與安卓 (Android) 高解析手機螢幕量身打造，自動適配系統繁中字型棧，預設啟用「舒適護眼大字 (115%)」，並提供「清晰長輩超大字 (130%)」與「標準 (100%)」自由即時切換。
        - **全系統自適應縮放**：連動放大即時報價 (stMetric)、按鈕點擊熱區、五檔盤口深度條、戰情廣播卡片與即時外電文字，排版自動擴展不擠壓，徹底告別手機瞇眼看盤。
@@ -3655,6 +3712,10 @@ with r4_c2:
     if st.button("💱 外匯大盤", type="primary" if st.session_state.main_mode == "forex" else "secondary", use_container_width=True, key="m_nav_forex"):
         st.session_state.main_mode = "forex"
         st.rerun()
+
+if st.button("🧠 八大機構級 AI 研究員工作總部 (投組壓測 / 日誌復盤 / 新聞 / 反方審查)", type="primary" if st.session_state.main_mode == "ai_agents" else "secondary", use_container_width=True, key="m_nav_ai_agents"):
+    st.session_state.main_mode = "ai_agents"
+    st.rerun()
 
 st.write("")
 
@@ -4349,12 +4410,28 @@ elif st.session_state.main_mode == "events":
         b_content_in = st.text_area("戰情詳細分析內容", value=current_briefing["content"], height=140, key="brief_content_in")
         b_author_in = st.text_input("發布者署名", value=current_briefing.get("author", "系統策略中心"), key="brief_author_in")
 
+        admin_env_key = ""
+        try:
+            admin_env_key = str(st.secrets.get("ADMIN_BRIEFING_KEY", "")).strip()
+        except Exception:
+            admin_env_key = os.environ.get("ADMIN_BRIEFING_KEY", "").strip()
+
+        b_admin_in = st.text_input(
+            "管理員發布通行碼（若部署環境有設定 ADMIN_BRIEFING_KEY 則為必填）",
+            type="password",
+            placeholder="請輸入管理員驗證碼",
+            key="brief_admin_pass_in"
+        )
+
         b_btn1, b_btn2, b_btn3 = st.columns(3)
         with b_btn1:
             if st.button("🚀 發布自訂戰情", type="primary", use_container_width=True, key="btn_pub_brief"):
-                save_market_briefing(b_title_in, b_content_in, b_author_in, is_manual=True)
-                st.success("已成功發布手動自訂戰情！")
-                st.rerun()
+                if admin_env_key and b_admin_in.strip() != admin_env_key:
+                    st.error("🚫 管理員通行碼錯誤，已阻斷未授權之全域戰情覆蓋！")
+                else:
+                    save_market_briefing(b_title_in, b_content_in, b_author_in, is_manual=True)
+                    st.success("已成功發布手動自訂戰情！")
+                    st.rerun()
         with b_btn2:
             if st.button("🤖 結合即時指標生成草稿", use_container_width=True, key="btn_auto_synth_brief"):
                 tw_p = safe_float(df_market.iloc[-1]['Close']) if (df_market is not None and not df_market.empty) else 0.0
@@ -4457,6 +4534,17 @@ elif st.session_state.main_mode == "forex":
         st.line_chart(df_usdtwd[['Close', 'MA20']].dropna().tail(60))
     else:
         st.write("暫時無法取得匯率走勢。")
+
+# ================= 模式 9：🧠 八大機構級 AI 研究員工作總部 =================
+elif st.session_state.main_mode == "ai_agents":
+    _fx_rate = safe_float(global_forex.get("twd_rate"), 32.0) if isinstance(global_forex, dict) else 32.0
+    _latest_rss = fetch_live_macro_rss("台股 OR 美股 OR CPI OR 聯準會 OR 台積電 OR 費半")
+    render_ai_research_hub_mode(
+        api_key=get_gemini_api_key(),
+        model_name=str(st.session_state.get("gemini_model_choice", GEMINI_DEFAULT_MODEL)),
+        usd_twd_rate=_fx_rate,
+        latest_news_list=_latest_rss,
+    )
 
 # 盤中 30 秒非阻塞式自動刷新控制器 (僅在即時看盤室且勾選時啟動前端計時，不阻塞 Python 執行緒)
 if auto_refresh and st.session_state.get("main_mode") == "live_watch":
