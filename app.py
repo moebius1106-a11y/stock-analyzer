@@ -455,6 +455,8 @@ DEFAULT_STRATEGIC_BRIEFING = {
 }
 
 def load_market_briefing():
+    if "local_pinned_briefing" in st.session_state:
+        return st.session_state["local_pinned_briefing"]
     if os.path.exists(BRIEFING_FILE):
         try:
             with open(BRIEFING_FILE, "r", encoding="utf-8") as f:
@@ -465,7 +467,7 @@ def load_market_briefing():
             pass
     return DEFAULT_STRATEGIC_BRIEFING.copy()
 
-def save_market_briefing(title: str, content: str, author: str, is_manual: bool = True, provided_pin: str = ""):
+def save_market_briefing(title: str, content: str, author: str, is_manual: bool = True, provided_pin: str = "", force_local: bool = False):
     new_b = {
         "title": str(title).strip(),
         "content": str(content).strip(),
@@ -475,7 +477,10 @@ def save_market_briefing(title: str, content: str, author: str, is_manual: bool 
         "is_manual": is_manual
     }
     
-    # 統一從 st.secrets 或 os.environ 讀取 ADMIN_PIN
+    if force_local:
+        st.session_state["local_pinned_briefing"] = new_b
+        return {"status": "success", "scope": "local"}
+        
     admin_pin = None
     try:
         admin_pin = st.secrets.get("ADMIN_PIN")
@@ -484,17 +489,20 @@ def save_market_briefing(title: str, content: str, author: str, is_manual: bool 
     if not admin_pin:
         admin_pin = os.environ.get("ADMIN_PIN")
         
-    # 如果系統有設定密碼，且輸入相符，則寫入全域檔案
-    if admin_pin and str(provided_pin) == str(admin_pin):
+    if not admin_pin:
+        st.session_state["local_pinned_briefing"] = new_b
+        return {"status": "success", "scope": "local_fallback"}
+        
+    if str(provided_pin) == str(admin_pin):
         try:
             with open(BRIEFING_FILE, "w", encoding="utf-8") as f:
                 json.dump(new_b, f, ensure_ascii=False, indent=2)
+            return {"status": "success", "scope": "global"}
         except Exception as e:
             logging.error(f"寫入全域戰情檔失敗: {e}", exc_info=True)
+            return {"status": "error", "message": f"寫入檔案失敗: {e}"}
     else:
-        # 密碼錯誤或系統未設密碼，預設行為：僅存入個人 Session
-        st.session_state["local_pinned_briefing"] = new_b
-    return new_b
+        return {"status": "error", "message": "密碼錯誤，拒絕發布"}
 
 # ----------------- 全頻道即時外電情報站核心引擎 (彭博/LINE TODAY/路透/台美股・5分鐘快取隔離) -----------------
 GLOBAL_NEWS_CHANNELS = {
@@ -585,14 +593,21 @@ def render_news_hub_widget(show_pin_btn: bool = False, key_prefix: str = "hub"):
                 with c_inf2:
                     if show_pin_btn:
                         if st.button("📌 置頂", key=f"{key_prefix}_pin_{idx_a}", use_container_width=True, help="鎖定此新聞為首頁頂部戰情焦點"):
-                            save_market_briefing(
+                            pin_val = st.session_state.get("admin_pin_input", "") or st.session_state.get("brief_admin_pass_in", "")
+                            res = save_market_briefing(
                                 f"🔥 外電快訊：{a_item['title'][:28]}...",
                                 f"【外電焦點】{a_item['title']}（來源：{a_item['source']} ｜ {a_item['pub_date']}）\n\n請密切留意該事件對台指期夜盤、美股科技股與次日開盤跳空之連動影響。",
                                 "外電戰情中心",
                                 is_manual=True,
-                                provided_pin=st.session_state.get("admin_pin_input", "")
+                                provided_pin=pin_val
                             )
-                            st.rerun()
+                            if res["status"] == "error":
+                                st.error(res["message"])
+                            else:
+                                msg = "全域發布成功" if res["scope"] == "global" else "僅在個人畫面置頂成功"
+                                st.success(msg)
+                                time.sleep(0.5)
+                                st.rerun()
                 st.write("---")
     else:
         st.info("⚪ 目前暫無該關鍵字或頻道之即時外電，請稍候再試或點擊「🔄 刷新外電」。")
@@ -1855,72 +1870,6 @@ def analyze_opening_and_ma(df_stock, live_info=None):
 
     return ma_status, ma_alignment, ma_score, gap_pct, intraday_pct, k_type, opening_diag
 
-def backtest_strategy(df_stock, market_type="tw"):
-    if len(df_stock) < 60:
-        return None
-
-    signals = (
-        (df_stock['Close'] > df_stock['MA20']) &
-        (df_stock['Close'] > df_stock['Close'].shift(1)) &
-        (df_stock['Volume'] > df_stock['Vol_MA5']) &
-        (df_stock['OSC'] > 0)
-    )
-
-    n_bars = len(df_stock)
-    trade_returns = []
-    i = 0
-
-    if market_type == "us":
-        cost_rate = 0.0010
-    elif market_type == "futures":
-        cost_rate = 0.0004
-    else:
-        cost_rate = 0.0045
-
-    while i < n_bars - 6:
-        if signals.iloc[i]:
-            entry_p = safe_float(df_stock['Open'].iloc[i + 1])
-            if entry_p <= 0:
-                entry_p = safe_float(df_stock['Close'].iloc[i + 1])
-            exit_p = safe_float(df_stock['Open'].iloc[i + 6])
-            if exit_p <= 0:
-                exit_p = safe_float(df_stock['Close'].iloc[i + 6])
-
-            if entry_p > 0 and exit_p > 0:
-                net_ret = ((exit_p - entry_p) / entry_p - cost_rate) * 100.0
-                trade_returns.append(net_ret)
-                i += 6
-                continue
-        i += 1
-
-    if not trade_returns:
-        return None
-
-    wins = [r for r in trade_returns if r > 0]
-    win_rate = (len(wins) / len(trade_returns)) * 100.0
-    avg_return = float(np.mean(trade_returns))
-    worst_single_loss = float(min(trade_returns))
-
-    equity_curve = [100.0]
-    for r in trade_returns:
-        equity_curve.append(equity_curve[-1] * (1.0 + r / 100.0))
-
-    peak = equity_curve[0]
-    max_dd = 0.0
-    for val in equity_curve:
-        if val > peak:
-            peak = val
-        dd = (peak - val) / peak * 100.0
-        if dd > max_dd:
-            max_dd = dd
-
-    return {
-        "count": len(trade_returns),
-        "win_rate": win_rate,
-        "avg_return": avg_return,
-        "worst_loss": worst_single_loss,
-        "mdd": max_dd
-    }
 
 @st.cache_data(ttl=300, show_spinner=False)
 def analyze_forex_data():
@@ -1997,13 +1946,13 @@ def analyze_forex_data():
 # ----------------- 美股夜盤與核心指標即時監控模組 -----------------
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_us_live_indicators():
-    """抓取美股即時大盤、ADR 與美債殖利率指標"""
+    """抓取美股最新完整收盤或盤中 K 線報價（含 K 棒時間戳）"""
     targets = [
         ("台積電 ADR", "TSM", "$"),
         ("費半 ETF", "SOXX", "$"),
         ("輝達 NVDA", "NVDA", "$"),
         ("那指期貨", "NQ=F", "點"),
-        ("10年美債", "^TNX", "%")
+        ("10年美債", "^TNX", "bps")  # 修改為 bp
     ]
     data = []
     for label, sym, unit in targets:
@@ -2014,14 +1963,27 @@ def fetch_us_live_indicators():
             if hist is not None and not hist.empty:
                 if isinstance(hist.columns, pd.MultiIndex):
                     hist.columns = hist.columns.get_level_values(0)
+                
+                # 取最後一筆有效報價
+                last_idx = hist.index[-1]
                 cur = safe_float(hist['Close'].iloc[-1])
                 prev = safe_float(hist['Close'].iloc[-2]) if len(hist) >= 2 else cur
                 
                 diff = cur - prev
-                pct = (diff / (prev + 1e-9)) * 100.0
+                # ^TNX 特殊處理：改為基點 (bps) 變動
+                if sym == "^TNX":
+                    diff = diff * 100.0
+                    pct = 0.0
+                else:
+                    pct = (diff / (prev + 1e-9)) * 100.0
+                
+                # 若為 timezone-aware 則轉為字串
+                dt_str = last_idx.strftime("%Y-%m-%d %H:%M") if hasattr(last_idx, "strftime") else str(last_idx)
+                
                 data.append({
                     "label": label, "symbol": sym, "unit": unit,
-                    "price": cur, "diff": diff, "pct": pct
+                    "price": cur, "diff": diff, "pct": pct,
+                    "bar_time": dt_str
                 })
         except Exception as e:
             logging.warning(f"fetch_us_live_indicators failed for {sym}: {e}")
@@ -4466,9 +4428,9 @@ elif st.session_state.main_mode == "events":
 
         admin_env_key = ""
         try:
-            admin_env_key = str(st.secrets.get("ADMIN_PIN", "")).strip()
+            admin_env_key = str(st.secrets.get("ADMIN_BRIEFING_KEY", "")).strip()
         except Exception:
-            admin_env_key = os.environ.get("ADMIN_PIN", "").strip()
+            admin_env_key = os.environ.get("ADMIN_BRIEFING_KEY", "").strip()
 
         b_admin_in = st.text_input(
             "管理員發布通行碼（若部署環境有設定 ADMIN_BRIEFING_KEY 則為必填）",
@@ -4480,11 +4442,12 @@ elif st.session_state.main_mode == "events":
         b_btn1, b_btn2, b_btn3 = st.columns(3)
         with b_btn1:
             if st.button("🚀 發布自訂戰情", type="primary", use_container_width=True, key="btn_pub_brief"):
-                if admin_env_key and b_admin_in.strip() != admin_env_key:
-                    st.error("🚫 管理員通行碼錯誤，已阻斷未授權之全域戰情覆蓋！")
+                res = save_market_briefing(b_title_in, b_content_in, b_author_in, is_manual=True, provided_pin=b_admin_in.strip())
+                if res["status"] == "error":
+                    st.error("🚫 " + res["message"])
                 else:
-                    save_market_briefing(b_title_in, b_content_in, b_author_in, is_manual=True, provided_pin=b_admin_in.strip())
-                    st.success("已成功發布手動自訂戰情！")
+                    st.success("全域發布成功！" if res["scope"] == "global" else "本機個人發布成功！")
+                    time.sleep(0.5)
                     st.rerun()
         with b_btn2:
             if st.button("🤖 結合即時指標生成草稿", use_container_width=True, key="btn_auto_synth_brief"):
@@ -4499,7 +4462,9 @@ elif st.session_state.main_mode == "events":
                     f"• 緊盯外資買賣超與台指期夜盤動態，若守穩 {tw_ma20:,.0f} 點生命線，洗盤後易有反彈。\n"
                     f"• 當沖嚴守 ORB 與 VWAP 均價線紀律，尾盤 13:20 前無條件平倉。"
                 )
-                save_market_briefing(synth_title, synth_body, "系統策略中心", is_manual=True, provided_pin=b_admin_in.strip())
+                save_market_briefing(synth_title, synth_body, "系統策略中心", is_manual=True, force_local=True)
+                st.success("已產生預覽草稿（僅供個人畫面觀看，尚未發布至全域）")
+                time.sleep(0.5)
                 st.rerun()
         with b_btn3:
             if st.button("🔄 恢復全自動同步外電", use_container_width=True, key="btn_reset_auto_brief"):
