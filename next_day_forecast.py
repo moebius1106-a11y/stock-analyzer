@@ -62,8 +62,18 @@ def fit_ridge_walkforward(
     default_sigma: float = 0.012,
 ) -> dict:
     """Fit standardized RidgeCV model and estimate out-of-sample residual volatility sigma."""
+    if train_df is None or train_df.empty:
+        return {
+            "model": None,
+            "feature_cols": feature_cols,
+            "shrinkage": shrinkage,
+            "sigma": default_sigma,
+            "oos_r2": None,
+            "has_edge": False,
+        }
+        
     available_cols = [c for c in feature_cols if c in train_df.columns]
-    if train_df is None or train_df.empty or not available_cols or "target_next_ret" not in train_df.columns:
+    if not available_cols or "target_next_ret" not in train_df.columns:
         return {
             "model": None,
             "feature_cols": available_cols,
@@ -73,9 +83,26 @@ def fit_ridge_walkforward(
             "has_edge": False,
         }
 
-    X = train_df[available_cols].astype(float).values
-    y = train_df["target_next_ret"].astype(float).values
-    n_splits = min(5, max(2, len(train_df) // 20))
+    # Drop NaNs and infinite values strictly before attempting training
+    clean_df = train_df.dropna(subset=available_cols + ["target_next_ret"]).copy()
+    clean_df = clean_df[np.isfinite(clean_df[available_cols]).all(axis=1)]
+    clean_df = clean_df[np.isfinite(clean_df["target_next_ret"])]
+
+    n_samples = len(clean_df)
+    if n_samples < 10:
+        return {
+            "model": None,
+            "feature_cols": available_cols,
+            "shrinkage": shrinkage,
+            "sigma": default_sigma,
+            "oos_r2": None,
+            "has_edge": False,
+        }
+
+    X = clean_df[available_cols].astype(float).values
+    y = clean_df["target_next_ret"].astype(float).values
+    
+    n_splits = min(5, max(2, n_samples // 10))
     tscv = TimeSeriesSplit(n_splits=n_splits)
 
     alphas = np.logspace(-2, 3, 25)
@@ -238,8 +265,27 @@ def next_day_forecast_fragment(us_data: list[dict] | None = None, tw_base_index:
     bucket = int(time.time() // 600) + int(st.session_state.get("forecast_manual_tick", 0))
     now_ts = time.time()
     try:
-        # 取出模型包裝 (此處簡化由快取提供)
-        bundle = fit_ridge_walkforward(pd.DataFrame(), ["tsm_ret", "soxx_ret", "nq_ret", "tnx_bp"])
+        # 取得真實的訓練歷史資料 (過去 1 年) 以訓練模型
+        try:
+            tw_hist = yf.Ticker("^TWII").history(period="1y")
+            tsm_hist = yf.Ticker("TSM").history(period="1y")
+            soxx_hist = yf.Ticker("SOXX").history(period="1y")
+            nq_hist = yf.Ticker("NQ=F").history(period="1y")
+            tnx_hist = yf.Ticker("^TNX").history(period="1y")
+            
+            tw_df = pd.DataFrame({"tw_date": tw_hist.index, "tw_close": tw_hist['Close']})
+            us_df = pd.DataFrame({
+                "us_date": tsm_hist.index,
+                "tsm_ret": tsm_hist['Close'].pct_change(),
+                "soxx_ret": soxx_hist['Close'].pct_change(),
+                "nq_ret": nq_hist['Close'].pct_change(),
+                "tnx_bp": tnx_hist['Close'].diff() * 100.0
+            })
+            train_df = build_training_frame(tw_df, us_df, ["tsm_ret", "soxx_ret", "nq_ret", "tnx_bp"])
+            bundle = fit_ridge_walkforward(train_df, ["tsm_ret", "soxx_ret", "nq_ret", "tnx_bp"])
+        except Exception as data_err:
+            logging.warning(f"Failed to build training frame: {data_err}")
+            bundle = {"model": None, "feature_cols": ["tsm_ret", "soxx_ret", "nq_ret", "tnx_bp"]}
         snap = _fetch_forecast_snapshot(bucket, us_data)
         st.session_state["last_good_forecast_snap"] = snap
         st.session_state["last_good_forecast_ts"] = now_ts
@@ -286,9 +332,5 @@ def next_day_forecast_fragment(us_data: list[dict] | None = None, tw_base_index:
         next_sec = 600 - int(time.time() % 600)
         st.caption(f"🕒 最後更新：{snap['fetched_at']} ｜ 下次自動刷新約 {next_sec} 秒後")
 
-    st.caption(
-        "因子貢獻參考："
-        + "、".join([f"{k}: {v*100:+.3f}%" for k, v in contributions.items()])
-        + f" ｜ 特徵時間：{snap.get('timestamps', {})}"
-    )
+    st.caption(f"特徵時間：{snap.get('timestamps', {})}")
     st.caption("⚠️ 模型尚無充足歷史回測優勢驗證，僅供參考；隔日漲跌雜訊極大，非交易訊號。")
