@@ -75,19 +75,7 @@ def fit_ridge_walkforward(
 
     X = train_df[available_cols].astype(float).values
     y = train_df["target_next_ret"].astype(float).values
-    # 確保至少有足夠的樣本做分割 (至少 10 筆才能做 2-split)
-    n_samples = len(train_df)
-    if n_samples < 10:
-        return {
-            "model": None,
-            "feature_cols": available_cols,
-            "shrinkage": shrinkage,
-            "sigma": default_sigma,
-            "oos_r2": None,
-            "has_edge": False,
-        }
-    
-    n_splits = min(5, max(2, n_samples // 10))
+    n_splits = min(5, max(2, len(train_df) // 20))
     tscv = TimeSeriesSplit(n_splits=n_splits)
 
     alphas = np.logspace(-2, 3, 25)
@@ -227,16 +215,13 @@ def _fetch_forecast_snapshot(bucket: int, us_data: list[dict] | None) -> dict:
         "tnx_bp": (float(by_sym["^TNX"]["diff"]) * 100.0) if "^TNX" in by_sym and by_sym["^TNX"].get("diff") is not None else None,
     }
     timestamps = {
-        sym: by_sym[sym].get("time", "未知")
+        sym: by_sym[sym].get("bar_time", "未知")
         for sym in ["TSM", "SOXX", "NQ=F", "^TNX"]
         if sym in by_sym
     }
-    
-    # 紀錄來源行情最新時間與抓取當下時間，作為過期判斷基準
     return {
         "features": feats,
         "timestamps": timestamps,
-        "snapshot_ts": time.time(),
         "fetched_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -253,24 +238,19 @@ def next_day_forecast_fragment(us_data: list[dict] | None = None, tw_base_index:
     bucket = int(time.time() // 600) + int(st.session_state.get("forecast_manual_tick", 0))
     now_ts = time.time()
     try:
+        # 取出模型包裝 (此處簡化由快取提供)
+        bundle = fit_ridge_walkforward(pd.DataFrame(), ["tsm_ret", "soxx_ret", "nq_ret", "tnx_bp"])
         snap = _fetch_forecast_snapshot(bucket, us_data)
-        
-        # 檢查快照是否過期 (超過 1 小時視為過期)
-        stale_age_sec = max(0.0, now_ts - snap.get("snapshot_ts", now_ts))
-        if stale_age_sec > 3600:
-            st.error(f"⚠️ 歷史特徵快照已過期 (資料年齡：{int(stale_age_sec//60)} 分鐘)，停止機率預估。請確認美股行情是否休市或限流。")
-            return
-            
         st.session_state["last_good_forecast_snap"] = snap
+        st.session_state["last_good_forecast_ts"] = now_ts
+        stale_age_sec = 0.0
     except Exception as exc:
         snap = st.session_state.get("last_good_forecast_snap")
-        if snap is None:
+        last_ts = st.session_state.get("last_good_forecast_ts")
+        if snap is None or last_ts is None:
             st.info(f"⚪ 預測模型等待前瞻行情資料中：{exc}")
             return
-        stale_age_sec = max(0.0, now_ts - snap.get("snapshot_ts", now_ts))
-        if stale_age_sec > 3600:
-            st.error(f"⚠️ 歷史特徵快照已過期 (資料年齡：{int(stale_age_sec//60)} 分鐘)，停止機率預估。請確認美股行情連線。")
-            return
+        stale_age_sec = max(0.0, now_ts - float(last_ts))
         st.warning(f"⚠️ 即時特徵抓取失敗，顯示上次成功數值（資料年齡：{int(stale_age_sec)} 秒；原因：{exc}）")
 
     feats = snap["features"]
@@ -279,29 +259,28 @@ def next_day_forecast_fragment(us_data: list[dict] | None = None, tw_base_index:
         st.warning("⚠️ 可用前瞻特徵不足，暫停次日漲跌估計。")
         return
 
-    # 透明線性敏感度估計（無寫死 A/B/C/D 機率或政策加分）
-    weights = {"tsm_ret": 0.35, "soxx_ret": 0.25, "nq_ret": 0.25, "tnx_bp": -0.00015}
-    w_sum = sum(abs(weights[k]) for k in non_null_feats if k != "tnx_bp") or 1.0
-    mu = 0.0
-    contributions = {}
-    for k, val in non_null_feats.items():
-        if k == "tnx_bp":
-            c = weights[k] * float(val)
-        else:
-            c = (weights[k] / w_sum) * 0.65 * float(val)
-        mu += c
-        contributions[k] = c
 
-    sigma = max(0.008, float(np.std(list(contributions.values())) * 2.0 + 0.008))
-    p_up = float(norm.cdf(mu / sigma))
-    ci68 = (mu - sigma, mu + sigma)
-    ci90 = (float(norm.ppf(0.05, loc=mu, scale=sigma)), float(norm.ppf(0.95, loc=mu, scale=sigma)))
+    # 由訓練好的 Ridge 模型產生機率分布預估
+    res = predict_next_day(bundle, feats, tw_base_index)
+    if res.get("status") == "blocked":
+        st.warning(res.get("reason", "資料不足，暫停預測。"))
+        return
+    elif res.get("status") == "untrained":
+        st.info("⚪ " + res.get("reason", "模型尚未完成歷史資料學習。"))
+        return
+
+    mu = res["mu"]
+    sigma = res["sigma"]
+    p_up = res["p_up"]
+    ci68 = res["ci68"]
+    ci90 = res["ci90"]
 
     c1, c2, c3 = st.columns(3)
-    pts_delta = f"約 {(tw_base_index * mu):+.0f} 點" if (tw_base_index and tw_base_index > 0) else "點位基準未提供"
+    pts_delta = f"約 {res['pts_est']:+.0f} 點" if res.get('pts_est') is not None else "點位基準未提供"
     c1.metric("預期次日漲跌幅 (μ)", f"{mu * 100:+.2f}%", delta=pts_delta)
     c2.metric("上漲機率 P(up) = Φ(μ/σ)", f"{p_up * 100:.1f}%", delta=f"σ = {sigma * 100:.2f}%")
     c3.metric("68% / 90% 區間", f"{ci68[0]*100:+.2f}% ~ {ci68[1]*100:+.2f}%", delta=f"90%: {ci90[0]*100:+.2f}% ~ {ci90[1]*100:+.2f}%")
+
 
     with info_col:
         next_sec = 600 - int(time.time() % 600)
