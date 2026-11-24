@@ -1,11 +1,9 @@
-# stock-analyzer-dev (測試環境 V9.9 旗艦機構研究版)
+# 股期決策旗艦站 V10
 
-## 測試環境專屬配置
-- 於 Streamlit Cloud Secrets 設定 `APP_ENV = "dev"` 即可在標題自動顯示 `[DEV 測試環境]` 識別徽章，避免與正式站混淆。
-- GitHub Actions 保活腳本優先讀取 `STREAMLIT_DEV_URL` 並執行真實 HTTP 200 健康檢查。
+跨市場量化研究與看盤輔助平台（台股、美股、期貨、ETF、外匯與機構級 AI 研究員模組）。
 
-## 快速啟動
-```bash
-pip install -r requirements.txt
-APP_ENV=dev streamlit run app.py
-```
+## 部署與設定重點
+- **Python 版本建議**：使用 Python 3.12 部署於 Streamlit Community Cloud。
+- **伺服器安全組態**：`.streamlit/config.toml` 已啟用 `enableXsrfProtection = true` 與 `enableCORS = true`。
+- **管理員金鑰**：若需開放全域戰情發布，請於 `st.secrets` 設定 `ADMIN_PIN`；一般訪客置頂僅影響個人 Session。
+- **風險聲明**：本系統所有指標、回測與機率估計皆為量化研究與輔助參考，不構成投資建議。
