@@ -2002,29 +2002,24 @@ def fetch_us_live_indicators():
     for label, sym, unit in targets:
         try:
             t = yf.Ticker(sym)
-            hist = t.history(period="2d", interval="1m")
-            if hist is None or hist.empty or len(hist) < 2:
-                hist = t.history(period="5d")
+            hist = t.history(period="5d", interval="1d")
             
             if hist is not None and not hist.empty:
                 if isinstance(hist.columns, pd.MultiIndex):
                     hist.columns = hist.columns.get_level_values(0)
                 cur = safe_float(hist['Close'].iloc[-1])
-                prev = safe_float(t.info.get("previousClose") if t.info else None)
-                if prev <= 0 and len(hist) >= 2:
-                    prev = safe_float(hist['Close'].iloc[-2], cur)
-                if prev <= 0:
-                    prev = cur
+                prev = safe_float(hist['Close'].iloc[-2]) if len(hist) >= 2 else cur
+                
                 diff = cur - prev
                 pct = (diff / (prev + 1e-9)) * 100.0
                 data.append({
                     "label": label, "symbol": sym, "unit": unit,
                     "price": cur, "diff": diff, "pct": pct
                 })
-        except Exception:
+        except Exception as e:
+            logging.warning(f"fetch_us_live_indicators failed for {sym}: {e}")
             continue
     return data
-
 def render_next_day_forecast_panel(us_data, tw_base_index: float = 0.0):
     """根據美股前瞻指標與加權指數動態基準推演次日開市情境（含缺漏防護與權重免責）"""
     if not us_data:
@@ -2175,6 +2170,22 @@ def render_us_live_dashboard():
                 st.rerun()
 
         us_data = fetch_us_live_indicators()
+        
+        # 動態取得最新加權指數點位與時間作為換算基準（優先 TWSE MIS，其次 Yahoo ^TWII）
+        live_tw_base = 0.0
+        tw_quote_meta = "Yahoo Finance 延遲報價"
+        try:
+            dash_snap = fetch_twse_market_dashboard()
+            if dash_snap and safe_float(dash_snap.get("twii_price")) > 1000.0:
+                live_tw_base = safe_float(dash_snap["twii_price"])
+                tw_quote_meta = f"TWSE 證交所 ({dash_snap.get('data_time', '即時/收盤')})"
+            elif "df_market" in globals() and df_market is not None and not df_market.empty:
+                live_tw_base = safe_float(df_market.iloc[-1]["Close"], 0.0)
+                last_dt_s = str(df_market.index[-1])[:10]
+                tw_quote_meta = f"Yahoo Finance ({last_dt_s} 收盤・延遲行情)"
+        except Exception as e:
+            logging.warning(f"取得加權指數基準異常: {e}")
+            
         if us_data:
             for i in range(0, len(us_data), 2):
                 chunk = us_data[i:i+2]
@@ -2188,26 +2199,12 @@ def render_us_live_dashboard():
                         delta=f"{sign}{item['diff']:.2f} ({sign}{item['pct']:.2f}%)"
                     )
 
-            # 動態取得最新加權指數點位與時間作為換算基準（優先 TWSE MIS，其次 Yahoo ^TWII）
-            live_tw_base = 0.0
-            tw_quote_meta = "Yahoo Finance 延遲報價"
-            try:
-                dash_snap = fetch_twse_market_dashboard()
-                if dash_snap and safe_float(dash_snap.get("twii_price")) > 1000.0:
-                    live_tw_base = safe_float(dash_snap["twii_price"])
-                    tw_quote_meta = f"TWSE 證交所 ({dash_snap.get('data_time', '即時/收盤')})"
-                elif "df_market" in globals() and df_market is not None and not df_market.empty:
-                    live_tw_base = safe_float(df_market.iloc[-1]["Close"], 0.0)
-                    last_dt_s = str(df_market.index[-1])[:10]
-                    tw_quote_meta = f"Yahoo Finance ({last_dt_s} 收盤・延遲行情)"
-            except Exception as e:
-                logging.warning(f"取得加權指數基準異常: {e}")
-
             st.caption(f"🕒 **行情基準來源**：{tw_quote_meta} ｜ 美股數據：Yahoo Finance 跨市場報價（含盤前/盤後延遲提示）")
-            next_day_forecast_fragment(us_data=us_data, tw_base_index=live_tw_base)
         else:
-            st.info("⚪ 目前外部美股撮合連線中，請稍候或點擊右上角刷新。")
-
+            st.info("⚪ 目前外部美股撮合連線中，或遇限流，請稍候點擊右上角刷新。")
+            
+        # [FIX] 預測模組獨立掛載於外層，無論 Yahoo 是否限流，預測面板都不會消失
+        next_day_forecast_fragment(us_data=us_data, tw_base_index=live_tw_base)
 def preload_global_benchmarks():
     tickers = ["^TWII", "WTX=F", "TSM", "^SOX", "^GSPC"]
     results = {}
