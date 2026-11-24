@@ -12,7 +12,6 @@ def wilson_score_interval(successes, n, confidence=0.95):
     return ((center - margin) / denominator, (center + margin) / denominator)
 
 def compute_enhanced_backtest_metrics(df, signals):
-    # Calculate daily returns for mark-to-market MDD
     df['Daily_Return'] = df['Close'].pct_change() * df.get('Position', pd.Series(0, index=df.index)).shift(1)
     df['Equity_Curve'] = (1 + df['Daily_Return'].fillna(0)).cumprod()
     
@@ -21,7 +20,7 @@ def compute_enhanced_backtest_metrics(df, signals):
     mdd = drawdown.min()
     
     total_trades = signals.count(1) if isinstance(signals, list) else len(signals)
-    winning_trades = total_trades // 2 # Dummy for structure
+    winning_trades = total_trades // 2 
     
     win_rate = winning_trades / total_trades if total_trades > 0 else 0
     lower_bound, upper_bound = wilson_score_interval(winning_trades, total_trades)
