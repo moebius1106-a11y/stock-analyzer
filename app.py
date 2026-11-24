@@ -593,7 +593,7 @@ def render_news_hub_widget(show_pin_btn: bool = False, key_prefix: str = "hub"):
                 with c_inf2:
                     if show_pin_btn:
                         if st.button("📌 置頂", key=f"{key_prefix}_pin_{idx_a}", use_container_width=True, help="鎖定此新聞為首頁頂部戰情焦點"):
-                            pin_val = st.session_state.get("admin_pin_input", "") or st.session_state.get("brief_admin_pass_in", "")
+                            pin_val = st.session_state.get("brief_admin_pass_in", "")
                             res = save_market_briefing(
                                 f"🔥 外電快訊：{a_item['title'][:28]}...",
                                 f"【外電焦點】{a_item['title']}（來源：{a_item['source']} ｜ {a_item['pub_date']}）\n\n請密切留意該事件對台指期夜盤、美股科技股與次日開盤跳空之連動影響。",
@@ -1990,142 +1990,9 @@ def fetch_us_live_indicators():
             continue
     return data
 def render_next_day_forecast_panel(us_data, tw_base_index: float = 0.0):
-    """根據美股前瞻指標與加權指數動態基準推演次日開市情境（含缺漏防護與權重免責）"""
-    if not us_data:
-        st.info("⚪ 目前美股行情撮合中，暫無足夠指標建立次日開市預測。")
-        return
-
-    factor_changes = {}
-    missing_items = []
-    target_map = {
-        "TSM": "台積電 ADR",
-        "SOXX": "費城半導體 ETF",
-        "NQ=F": "那斯達克期貨",
-        "^TNX": "10年美債殖利率",
-    }
-    data_dict = {item.get("symbol"): item for item in us_data}
-
-    for sym, label in target_map.items():
-        if sym in data_dict and safe_float(data_dict[sym].get("price")) > 0:
-            factor_changes[sym] = safe_float(data_dict[sym].get("pct"), 0.0)
-        else:
-            missing_items.append(f"{label} ({sym})")
-
-    # 指標防護：TSM、SOXX、NQ、TNX 缺漏達 2 項以上或缺少 TSM 時，暫停預測
-    if len(missing_items) >= 2 or "TSM" not in factor_changes:
-        st.warning(
-            f"⚠️ **關鍵前瞻指標資料不足，暫停次日開盤預測**（缺少：{', '.join(missing_items)}）。"
-            f"系統已自動阻斷不完整資料下的點位推算。"
-        )
-        return
-
-    tsm_pct = factor_changes.get("TSM", 0.0)
-    soxx_pct = factor_changes.get("SOXX", 0.0)
-    nq_pct = factor_changes.get("NQ=F", 0.0)
-    tnx_pct = factor_changes.get("^TNX", 0.0)
-
-    # 綜合敏感度加權換算（不帶入無即時驗證之寫死政策加分）
-    tw_weighted_jump = (
-        (tsm_pct * 0.35)
-        + (soxx_pct * 0.15)
-        + (nq_pct * 0.15)
-        + ((-tnx_pct * 0.03) if tnx_pct > 0 else 0.0)
-    )
-
-    if tw_weighted_jump >= 1.2:
-        p_a = (tw_weighted_jump * 1.05, tw_weighted_jump * 1.35)
-        p_b = (tw_weighted_jump * 0.70, tw_weighted_jump * 1.00)
-        p_c = (0.20, tw_weighted_jump * 0.60)
-        p_d = (-1.20, -0.30)
-        w_a, w_b, w_c, w_d = 55, 30, 10, 5
-    elif tw_weighted_jump >= 0:
-        p_a = (tw_weighted_jump + 0.60, tw_weighted_jump + 1.20)
-        p_b = (tw_weighted_jump, tw_weighted_jump + 0.60)
-        p_c = (-0.20, tw_weighted_jump)
-        p_d = (-1.00, -0.30)
-        w_a, w_b, w_c, w_d = 25, 45, 20, 10
-    else:
-        p_a = (0.30, 0.80)
-        p_b = (-0.40, 0.40)
-        p_c = (tw_weighted_jump - 0.50, tw_weighted_jump)
-        p_d = (tw_weighted_jump * 1.30, tw_weighted_jump * 0.80)
-        w_a, w_b, w_c, w_d = 10, 20, 45, 25
-
-    has_tw_pts = tw_base_index > 1000.0
-
-    plans = [
-        {
-            "name": "方案 A：強勢動能・跳空突破",
-            "desc": "美股科技族群大幅走強，ADR 與期指同步共振，多方早盤強攻開出。",
-            "pct_range": p_a,
-            "weight": w_a,
-            "badge": "🔥 動能偏強" if w_a >= 50 else "⭐ 攻擊情境",
-            "tag_color": "#e53935",
-            "action": "嚴禁開盤盲目追高；觀察開盤 15 分 K (ORB) 站穩均價線 (VWAP) 後再順勢評估。"
-        },
-        {
-            "name": "方案 B：常態開高・震盪換手",
-            "desc": "美股反彈動能溫和，早盤開高後面臨短線獲利調節賣壓，回測均線支撐。",
-            "pct_range": p_b,
-            "weight": w_b,
-            "badge": "🟢 常態情境",
-            "tag_color": "#43a047",
-            "action": "逢回檔測試昨收或月線有守再行布局，嚴守個股停損點。"
-        },
-        {
-            "name": "方案 C：拉高遇壓・漲幅收斂整理",
-            "desc": "早盤開高後追價買盤意願謹慎，盤中量能萎縮轉為區間橫盤拉鋸。",
-            "pct_range": p_c,
-            "weight": w_c,
-            "badge": "🟡 震盪整理",
-            "tag_color": "#ff9800",
-            "action": "把握反彈契機適度調節弱勢部位，保留現金部位耐心等待表態。"
-        },
-        {
-            "name": "方案 D：外圍回落・回測下檔支撐",
-            "desc": "外圍期指翻黑或美債殖利率突揚，早盤開低考驗下檔均線與整數關卡防守力道。",
-            "pct_range": p_d,
-            "weight": w_d,
-            "badge": "🛡️ 防守情境",
-            "tag_color": "#1a73e8",
-            "action": "啟動防禦紀律，嚴禁逆勢摸底攤平；未出現止跌訊號前維持低持股水位。"
-        }
-    ]
-
-    st.write("---")
-    st.markdown("#### 🔮 【次日開市漲跌預測 % 數與多重情境推演模型】")
-    idx_status_str = (
-        f"加權指數動態基準：`{tw_base_index:,.1f}` 點"
-        if has_tw_pts
-        else "（加權指數連線中，暫僅提供漲跌百分比推算）"
-    )
-    st.caption(f"因子敏感度：TSM 35% ｜ SOXX 15% ｜ NQ 15% ｜ 美債 3% ｜ {idx_status_str}")
-
-    for plan in plans:
-        pts_html = ""
-        if has_tw_pts:
-            low_pts = tw_base_index * plan['pct_range'][0] / 100.0
-            high_pts = tw_base_index * plan['pct_range'][1] / 100.0
-            pts_html = f"<span style='font-size:0.85rem; font-weight:400; color:#666;'>(約 {low_pts:+,.0f} ～ {high_pts:+,.0f} 點)</span>"
-
-        st.markdown(f"""
-        <div style="background: rgba(128,128,128,0.05); border-left: 4px solid {plan['tag_color']}; border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 0.5rem;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <b style="color:{plan['tag_color']}; font-size:0.96rem;">{plan['name']}</b>
-                <span style="font-size:0.8rem; background:rgba(128,128,128,0.12); padding:2px 8px; border-radius:12px;">模型參考權重：<b>{plan['weight']}%</b> ｜ {plan['badge']}</span>
-            </div>
-            <div style="margin: 0.35rem 0; font-size:1.06rem; font-weight:700; color:{plan['tag_color']};">
-                預估漲跌：{plan['pct_range'][0]:+.2f}% ～ {plan['pct_range'][1]:+.2f}% {pts_html}
-            </div>
-            <div style="font-size:0.88rem; color:#444; line-height:1.45; margin-bottom:0.25rem;">
-                • <b>盤勢結構</b>：{plan['desc']}
-            </div>
-            <div style="font-size:0.88rem; color:#2e7d32; line-height:1.45;">
-                • <b>操盤軍規</b>：{plan['action']}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    st.caption("📌 **免責說明**：本情境權重為基於美股即時隔夜連動之敏感度模擬參考值，非真實歷史勝率保證。")
+    # Deprecated: A/B/C/D hardcoded prediction is removed.
+    # The live dashboard now exclusively uses `next_day_forecast_fragment` with the trained Ridge model.
+    pass
 
 def render_us_live_dashboard():
     """渲染美股夜盤與即時指標卡片看板（自適應雙欄，解決手機寬度擠壓問題）"""
@@ -4433,7 +4300,7 @@ elif st.session_state.main_mode == "events":
             admin_env_key = os.environ.get("ADMIN_BRIEFING_KEY", "").strip()
 
         b_admin_in = st.text_input(
-            "管理員發布通行碼（若部署環境有設定 ADMIN_BRIEFING_KEY 則為必填）",
+            "管理員發布通行碼（若部署環境有設定 ADMIN_PIN 則為必填）",
             type="password",
             placeholder="請輸入管理員驗證碼",
             key="brief_admin_pass_in"
