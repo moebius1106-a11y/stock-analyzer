@@ -1,12 +1,9 @@
-# 股期決策旗艦站 V9.9 (跨市場量化決策 ＆ 八大機構級 AI 研究員版)
+# 股期決策旗艦站 V10
 
-## 版本亮點 (V9.9)
-- **完整保留線上版九大模式架構**（大盤分時看盤室、台股診斷、美股診斷、台灣期貨、美股期貨、ETF雷達、體質掃描、法說戰情、全球外匯）
-- **新增八大機構級 AI 研究員工作總部**（`ai_research_agents.py`：交易點子產生器、日週線技術分析師、新聞轉交易研究、策略回測審計、投組 -20% 壓力測試、20筆交易日誌復盤、財報基本面研究員、投資論點反方審查）
-- **全維度風控與資安升級**：動態加權指數換算、TSM/SOXX/NQ/TNX 缺失阻斷、MA20 暖機全卡片一致性阻斷、ORB 09:00~09:14 嚴格邊界、Gemini `x-goog-api-key` 安全 Header、多使用者 Session 隔離、XSRF/CORS 安全開啟
+跨市場量化研究與看盤輔助平台（台股、美股、期貨、ETF、外匯與機構級 AI 研究員模組）。
 
-## 快速啟動
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
+## 部署與設定重點
+- **Python 版本建議**：使用 Python 3.12 部署於 Streamlit Community Cloud。
+- **伺服器安全組態**：`.streamlit/config.toml` 已啟用 `enableXsrfProtection = true` 與 `enableCORS = true`。
+- **管理員金鑰**：若需開放全域戰情發布，請於 `st.secrets` 設定 `ADMIN_PIN`；一般訪客置頂僅影響個人 Session。
+- **風險聲明**：本系統所有指標、回測與機率估計皆為量化研究與輔助參考，不構成投資建議。

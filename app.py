@@ -1,4 +1,5 @@
 import streamlit as st
+from next_day_forecast import next_day_forecast_fragment
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -465,18 +466,27 @@ def load_market_briefing():
 
 def save_market_briefing(title: str, content: str, author: str, is_manual: bool = True):
     new_b = {
-        "title": title.strip(),
-        "content": content.strip(),
-        "author": author.strip() or "系統策略中心",
+        "title": str(title).strip(),
+        "content": str(content).strip(),
+        "author": str(author).strip() or "系統策略中心",
         "updated_at": datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M"),
         "level": "critical",
         "is_manual": is_manual
     }
+    admin_pin = None
     try:
-        with open(BRIEFING_FILE, "w", encoding="utf-8") as f:
-            json.dump(new_b, f, ensure_ascii=False, indent=2)
+        admin_pin = st.secrets.get("ADMIN_PIN")
     except Exception:
-        pass
+        admin_pin = None
+    provided_pin = str(st.session_state.get("admin_pin_input", "") or "")
+    if admin_pin and provided_pin == str(admin_pin):
+        try:
+            with open(BRIEFING_FILE, "w", encoding="utf-8") as f:
+                json.dump(new_b, f, ensure_ascii=False, indent=2)
+        except Exception:
+            logging.warning("寫入全域戰情檔失敗", exc_info=True)
+    else:
+        st.session_state["local_pinned_briefing"] = new_b
     return new_b
 
 # ----------------- 全頻道即時外電情報站核心引擎 (彭博/LINE TODAY/路透/台美股・5分鐘快取隔離) -----------------
@@ -1260,19 +1270,26 @@ def fetch_bot_forex():
     try:
         r = requests.get(url, headers=headers, timeout=(2.0, 3.0))
         if r.status_code == 200:
-            reader = csv.reader(r.text.splitlines())
-            for row in reader:
-                if len(row) >= 5 and row[0].strip() == "USD":
-                    # 即時本行賣出 (索引 12) 或 現金賣出 (索引 4/3)
-                    val = safe_float(row[12]) if len(row) >= 13 else 0.0
-                    if val <= 0 and len(row) >= 5:
-                        val = safe_float(row[4])
-                    if val <= 0 and len(row) >= 4:
-                        val = safe_float(row[3])
-                    if val > 0:
-                        return {"usd_twd": val, "source": "臺灣銀行官方牌告", "is_real": True}
+            rows = list(csv.reader(r.text.splitlines()))
+            if not rows:
+                return None
+            header = [c.strip() for c in rows[0]]
+            buy_idx = header.index("本行即期買入") if "本行即期買入" in header else None
+            sell_idx = header.index("本行即期賣出") if "本行即期賣出" in header else None
+            if buy_idx is None or sell_idx is None:
+                logging.warning("臺銀匯率 CSV 表頭找不到即期買賣欄位: %s", header)
+                return None
+            for row in rows[1:]:
+                if row and row[0].strip().upper() == "USD":
+                    b_val = safe_float(row[buy_idx]) if buy_idx < len(row) else 0.0
+                    s_val = safe_float(row[sell_idx]) if sell_idx < len(row) else 0.0
+                    if b_val > 0 and s_val > 0:
+                        mid_val = (b_val + s_val) / 2.0
+                        return {"usd_twd": mid_val, "spot_buy": b_val, "spot_sell": s_val, "source": "臺灣銀行官方牌告(即期中間價)", "is_real": True}
+                    if s_val > 0:
+                        return {"usd_twd": s_val, "source": "臺灣銀行官方牌告(即期賣出)", "is_real": True}
     except Exception:
-        pass
+        logging.warning("fetch_bot_forex 擷取失敗", exc_info=True)
     return None
 
 # ----------------- 權威 API 3：機構分析師評等與目標價 -----------------
@@ -2186,7 +2203,7 @@ def render_us_live_dashboard():
                 logging.warning(f"取得加權指數基準異常: {e}")
 
             st.caption(f"🕒 **行情基準來源**：{tw_quote_meta} ｜ 美股數據：Yahoo Finance 跨市場報價（含盤前/盤後延遲提示）")
-            render_next_day_forecast_panel(us_data, tw_base_index=live_tw_base)
+            next_day_forecast_fragment(us_data=us_data, tw_base_index=live_tw_base)
         else:
             st.info("⚪ 目前外部美股撮合連線中，請稍候或點擊右上角刷新。")
 
@@ -2517,51 +2534,59 @@ def fetch_gemini_qualitative_playbook(
 
     return False, f"⚠️ Gemini AI 暫時無法回應（{last_err}）。系統量化指標與下單風控計算機均維持正常運作。"
 
+FUTURES_MARGIN_UPDATED_AT = "2026-11-01"  # 基準日：待期交所官方資料確認
+FUTURES_MARGIN_SOURCE = "臺灣期貨交易所 (TAIFEX) 基準參數（待期交所官方資料確認）"
+
 TW_FUTURES_SPECS = {
     "WTX": {
         "name": "台指期貨 (大台)",
         "point_value": 200,
         "tick_size": 1.0,
         "tick_value": 200,
-        "initial_margin": 250000,
-        "maintenance_margin": 192000,
-        "desc": "全市場主力大額籌碼風向核心，每點 200 元"
+        "initial_margin": 338000,
+        "maintenance_margin": 269000,
+        "settlement_margin": 259000,
+        "desc": "全市場主力大額籌碼風向核心，每點 200 元（基準日 2026-11-01，待期交所官方資料確認）"
     },
     "MTX": {
         "name": "小型台指 (小台)",
         "point_value": 50,
         "tick_size": 1.0,
         "tick_value": 50,
-        "initial_margin": 62500,
-        "maintenance_margin": 48000,
-        "desc": "散戶與短線波段核心，每點 50 元"
+        "initial_margin": 84500,
+        "maintenance_margin": 67250,
+        "settlement_margin": 64750,
+        "desc": "散戶與短線波段核心，每點 50 元（基準日 2026-11-01，待期交所官方資料確認）"
     },
     "WMT": {
         "name": "微型台指 (微台)",
         "point_value": 10,
         "tick_size": 1.0,
         "tick_value": 10,
-        "initial_margin": 12500,
-        "maintenance_margin": 9600,
-        "desc": "小資量化避險首選，每點 10 元"
+        "initial_margin": 16900,
+        "maintenance_margin": 13450,
+        "settlement_margin": 12950,
+        "desc": "小資量化避險首選，每點 10 元（基準日 2026-11-01，待期交所官方資料確認）"
     },
     "TE": {
         "name": "電子期貨",
-        "point_value": 400,
+        "point_value": 4000,
         "tick_size": 0.05,
-        "tick_value": 20,
-        "initial_margin": 210000,
-        "maintenance_margin": 161000,
-        "desc": "追蹤電子類股，每點 400 元 (每跳 0.05 點 = 20 元)"
+        "tick_value": 200,
+        "initial_margin": 368000,
+        "maintenance_margin": 293000,
+        "settlement_margin": 282000,
+        "desc": "追蹤電子類股，每點 4,000 元（每跳 0.05 點 = 200 元；基準日 2026-11-01，待期交所官方資料確認）"
     },
     "TF": {
         "name": "金融期貨",
         "point_value": 1000,
         "tick_size": 0.2,
         "tick_value": 200,
-        "initial_margin": 130000,
-        "maintenance_margin": 100000,
-        "desc": "大型金控資產指標，每點 1000 元 (每跳 0.2 點 = 200 元)"
+        "initial_margin": 146000,
+        "maintenance_margin": 116000,
+        "settlement_margin": 112000,
+        "desc": "大型金控資產指標，每點 1,000 元（每跳 0.2 點 = 200 元；基準日 2026-11-01，待期交所官方資料確認）"
     }
 }
 
@@ -3517,7 +3542,7 @@ elif "115%" in curr_font_scale:
 current_briefing = get_auto_market_briefing(df_market, df_sox, global_forex)
 
 # ----------------- 頂部導航與功能設置 -----------------
-st.title("📱 股期決策旗艦站 (跨市場機構版)")
+st.title("📊 股期決策旗艦站 V10 (跨市場機構版)")
 
 with st.expander("⚙️ 個人風控本金、當沖折讓與看盤備忘錄", expanded=False):
     st.caption(f"📌 **本地端設定提示**：目前偏好參數儲存於伺服器本地環境 ({SETTINGS_FILE})。若在雲端多人環境使用，請使用下方備份碼匯入/匯出保存個人專屬設定。")
@@ -3591,21 +3616,20 @@ with st.expander("📦 匯出 / 匯入設定備份碼（防雲端休眠重置）
             logging.warning(f"還原備份碼解析失敗: {e}")
             st.error(f"備份碼格式錯誤：{str(e)}")
 
-with st.expander("📘 點此查看【系統現行版本完整功能清單與版本說明 (V9.9 旗艦機構研究版)】", expanded=False):
+with st.expander("📘 點此查看【系統現行版本完整功能清單與版本說明 (V10 旗艦機構研究版)】", expanded=False):
     st.markdown("""
     ### 🌟 系統定位與核心架構
-    本系統為**跨市場全維度量化決策平台**，整合臺灣證券交易所 (TWSE) 官方即時撮合、臺灣銀行官方牌告匯率、Google 財經全頻道即時外電 RSS、華爾街四大權威機構研究模組、**美股夜盤/ADR即時監控**、**次日股市漲跌多重情境預測方案 (A/B/C/D)** 與**當沖實戰決策室（VWAP/CDP/ORB突破/保本跳動計算）**。
+    本系統為**跨市場全維度量化決策平台**，整合臺灣證券交易所 (TWSE) 官方即時撮合、臺灣銀行官方牌告匯率、Google 財經全頻道即時外電 RSS、華爾街四大權威機構研究模組、**美股夜盤/ADR即時監控**、**次日股市漲跌機率分布估計 (每 10 分鐘局部更新)** 與**當沖實戰決策室（VWAP/CDP/ORB突破/保本跳動計算）**。
 
     ---
-    ### 🛠️ 核心功能模組總覽 (最新 V9.9 旗艦機構研究版釋出標註)
+    ### 🛠️ 核心功能模組總覽 (最新 V10 旗艦機構研究版釋出標註)
     1. **👀 雙系統手機專用字體縮放 ＆ 護眼引擎 (iOS / Android 通用) [NEW]**：
        - **跨平台防視力疲勞設計**：專為 iPhone (iOS) 與安卓 (Android) 高解析手機螢幕量身打造，自動適配系統繁中字型棧，預設啟用「舒適護眼大字 (115%)」，並提供「清晰長輩超大字 (130%)」與「標準 (100%)」自由即時切換。
        - **全系統自適應縮放**：連動放大即時報價 (stMetric)、按鈕點擊熱區、五檔盤口深度條、戰情廣播卡片與即時外電文字，排版自動擴展不擠壓，徹底告別手機瞇眼看盤。
        - **輕量與持久化**：純客戶端 CSS 渲染，伺服器零負擔、零崩潰風險；字體偏好自動儲存於 `user_settings.json` 與備份碼中，重整自動套用。
-    2. **🔮 次日開市漲跌多重情境預測方案 (A/B/C/D 精準 % 數模型) [NEW]**：
-       - **多因子敏感度加權**：整合台積電 ADR (35%)、費半 SOXX (15%)、微型那指期貨 (15%) 與 10 年美債殖利率 (3%)。
-       - **政策籌碼增益**：納入金管會限空令（借券賣出上限砍至 3%、融券保證金 130%）與國安基金授權效應。
-       - **四大情境動態推演**：方案 A（極致樂觀軋空）、方案 B（常態開高走堅）、方案 C（拉高震盪整理）、方案 D（美股翻黑政策底防禦），提供精確漲跌 % 數、指數點位區間、發生機率與對應操盤軍規。
+    2. **🔮 次日台股漲跌機率分布估計（每 10 分鐘局部更新） [NEW]**：
+       - 採用 `st.fragment(run_every=600)` 局部更新與 `merge_asof` 時間對齊，避免干擾整頁狀態。
+       - 輸出預期漲跌幅 μ、波動 σ、上漲機率 P(up) 與 68%/90% 區間，並揭露模型限制與風險。
     3. **📰 全頻道即時外電情報匯流中心 (含彭博 / LINE TODAY / 路透社) [NEW]**：
        - 整合八大情報頻道：彭博社 Bloomberg、LINE TODAY 財經、路透社 Reuters、國內權威財經（鉅亨/經濟/工商）、半導體AI、宏觀利率、台股籌碼與美股巨頭。
        - 支援自由輸入自訂關鍵字速查，5 分鐘 TTL 快取保護（單次請求僅 30KB），完全零伺服器負擔且杜絕 429 限流。
@@ -3613,7 +3637,6 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與版
     4. **🌐 美股大盤、台積電 ADR 與三大指標即時監控看板 [NEW]**：
        - 即時連線台積電 ADR (TSM)、費半 ETF (SOXX)、輝達 (NVDA)、那指期貨 (NQ) 與 10 年美債 (^TNX)。
        - 自適應雙欄排版，徹底解決手機螢幕文字被擠壓為省略號問題。
-       - 內建 TSM 370 美元鐵底防線自動化多空警報燈號。
     5. **📈 分時走勢圖（含昨收平盤線 ＆ VWAP 均價）手機橫向自由滑動 [NEW]**：
        - 解除全域寬度限制，注入專屬滑動容器樣式（`touch-action: pan-x`、`overflow-x: auto`）。
        - 手機端支援手指平滑向左／向右滑動，完整查看開盤至最新分鐘的完整 K 線與均價。
