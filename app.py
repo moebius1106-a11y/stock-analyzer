@@ -1,5 +1,6 @@
 import streamlit as st
 from next_day_forecast import next_day_forecast_fragment
+from taiex_19modules import determine_market_light, calc_available_fund, generate_line_memo
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -3543,6 +3544,31 @@ current_briefing = get_auto_market_briefing(df_market, df_sox, global_forex)
 
 # ----------------- 頂部導航與功能設置 -----------------
 st.title("📊 股期決策旗艦站 V10 (跨市場機構版)")
+
+with st.expander("🛡️ 【量化風控與 LINE 戰情輸出模組 (模組 5 & 19)】", expanded=False):
+    st.caption("依據 11/24 設定檔，動態計算紅黃綠燈可動用額度，並產生無 span 標籤之純文字 LINE 記事本內容。")
+    c_tw1, c_tw2, c_tw3 = st.columns(3)
+    idx_chg = c_tw1.number_input("大盤預估漲跌幅 (%)", value=0.0, step=0.1)
+    is_break = c_tw2.checkbox("是否跌破前低/支撐", value=False)
+    is_stand = c_tw3.checkbox("是否站穩 5MA", value=False)
+    
+    light_res = determine_market_light(idx_chg, is_break, is_stand, 1.0)
+    st.info(f"**目前推演燈號**：{light_res['light']} ｜ **建議防禦現金**：{light_res['cash_target_range']} ｜ **動用上限**：{light_res['max_action_limit_pct']*100:.1f}%")
+    
+    c_f1, c_f2, c_f3 = st.columns(3)
+    u_tot = c_f1.number_input("台股總資金 (NTD)", value=int(user_memory.get("capital_tw", 1000000)), step=100000)
+    u_csh = c_f2.number_input("目前帳戶現金 (NTD)", value=300000, step=50000)
+    u_t2 = c_f3.number_input("T+2 已買未交割款", value=0, step=10000)
+    
+    floor_pct = float(light_res['cash_target_range'].split("%")[0])/100.0 if "紅燈" not in light_res['light'] else 0.35
+    fund_res = calc_available_fund(u_tot, u_csh, u_t2, light_res['max_action_limit_pct'], floor_pct)
+    
+    st.metric("✅ 今日淨可動用額度", f"{fund_res['available_ntd']:,} 元", f"佔比 {fund_res['available_pct']:.1f}%")
+    
+    if st.button("📝 產生 LINE 記事本純文字戰情", use_container_width=True):
+        memo_str = generate_line_memo(light_res, fund_res, "依據目前美股連動與均線推演", ["2330 台積電", "2317 鴻海", "2454 聯發科"])
+        st.code(memo_str, language="markdown")
+
 
 with st.expander("⚙️ 個人風控本金、當沖折讓與看盤備忘錄", expanded=False):
     st.caption(f"📌 **本地端設定提示**：目前偏好參數儲存於伺服器本地環境 ({SETTINGS_FILE})。若在雲端多人環境使用，請使用下方備份碼匯入/匯出保存個人專屬設定。")
