@@ -1,6 +1,6 @@
 import streamlit as st
-from next_day_forecast import next_day_forecast_fragment
 from taiex_19modules import determine_market_light, calc_available_fund, generate_line_memo
+from next_day_forecast import next_day_forecast_fragment
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -2535,8 +2535,7 @@ def fetch_gemini_qualitative_playbook(
 
     return False, f"⚠️ Gemini AI 暫時無法回應（{last_err}）。系統量化指標與下單風控計算機均維持正常運作。"
 
-FUTURES_MARGIN_UPDATED_AT = "2026-11-01"  # 基準日：待期交所官方資料確認
-FUTURES_MARGIN_SOURCE = "臺灣期貨交易所 (TAIFEX) 基準參數（待期交所官方資料確認）"
+FUTURES_MARGIN_UPDATED_AT = "2026-11-01"  # 基準日：請以期交所最新公告為準
 
 TW_FUTURES_SPECS = {
     "WTX": {
@@ -2547,7 +2546,7 @@ TW_FUTURES_SPECS = {
         "initial_margin": 338000,
         "maintenance_margin": 269000,
         "settlement_margin": 259000,
-        "desc": "全市場主力大額籌碼風向核心，每點 200 元（基準日 2026-11-01，待期交所官方資料確認）"
+        "desc": "全市場主力大額籌碼風向核心，每點 200 元（基準日 2026-11-01，待期交所最新公告確認）"
     },
     "MTX": {
         "name": "小型台指 (小台)",
@@ -2557,7 +2556,7 @@ TW_FUTURES_SPECS = {
         "initial_margin": 84500,
         "maintenance_margin": 67250,
         "settlement_margin": 64750,
-        "desc": "散戶與短線波段核心，每點 50 元（基準日 2026-11-01，待期交所官方資料確認）"
+        "desc": "散戶與短線波段核心，每點 50 元（基準日 2026-11-01，待期交所最新公告確認）"
     },
     "WMT": {
         "name": "微型台指 (微台)",
@@ -2567,7 +2566,7 @@ TW_FUTURES_SPECS = {
         "initial_margin": 16900,
         "maintenance_margin": 13450,
         "settlement_margin": 12950,
-        "desc": "小資量化避險首選，每點 10 元（基準日 2026-11-01，待期交所官方資料確認）"
+        "desc": "小資量化避險首選，每點 10 元（基準日 2026-11-01，待期交所最新公告確認）"
     },
     "TE": {
         "name": "電子期貨",
@@ -2577,7 +2576,7 @@ TW_FUTURES_SPECS = {
         "initial_margin": 368000,
         "maintenance_margin": 293000,
         "settlement_margin": 282000,
-        "desc": "追蹤電子類股，每點 4,000 元（每跳 0.05 點 = 200 元；基準日 2026-11-01，待期交所官方資料確認）"
+        "desc": "追蹤電子類股，每點 4,000 元（每跳 0.05 點 = 200 元；基準日 2026-11-01，待期交所最新公告確認）"
     },
     "TF": {
         "name": "金融期貨",
@@ -2587,7 +2586,7 @@ TW_FUTURES_SPECS = {
         "initial_margin": 146000,
         "maintenance_margin": 116000,
         "settlement_margin": 112000,
-        "desc": "大型金控資產指標，每點 1,000 元（每跳 0.2 點 = 200 元；基準日 2026-11-01，待期交所官方資料確認）"
+        "desc": "大型金控資產指標，每點 1,000 元（每跳 0.2 點 = 200 元；基準日 2026-11-01，待期交所最新公告確認）"
     }
 }
 
@@ -3545,7 +3544,7 @@ current_briefing = get_auto_market_briefing(df_market, df_sox, global_forex)
 # ----------------- 頂部導航與功能設置 -----------------
 st.title("📊 股期決策旗艦站 V10 (跨市場機構版)")
 
-with st.expander("🛡️ 【量化風控與 LINE 戰情輸出模組 (模組 5 & 19)】", expanded=False):
+with st.expander("🛡️ 【量化風控與 LINE 戰情輸出模組 (模組 5 & 19)】", expanded=True):
     st.caption("依據 11/24 設定檔，動態計算紅黃綠燈可動用額度，並產生無 span 標籤之純文字 LINE 記事本內容。")
     c_tw1, c_tw2, c_tw3 = st.columns(3)
     idx_chg = c_tw1.number_input("大盤預估漲跌幅 (%)", value=0.0, step=0.1)
@@ -3653,9 +3652,10 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與版
        - **跨平台防視力疲勞設計**：專為 iPhone (iOS) 與安卓 (Android) 高解析手機螢幕量身打造，自動適配系統繁中字型棧，預設啟用「舒適護眼大字 (115%)」，並提供「清晰長輩超大字 (130%)」與「標準 (100%)」自由即時切換。
        - **全系統自適應縮放**：連動放大即時報價 (stMetric)、按鈕點擊熱區、五檔盤口深度條、戰情廣播卡片與即時外電文字，排版自動擴展不擠壓，徹底告別手機瞇眼看盤。
        - **輕量與持久化**：純客戶端 CSS 渲染，伺服器零負擔、零崩潰風險；字體偏好自動儲存於 `user_settings.json` 與備份碼中，重整自動套用。
-    2. **🔮 次日台股漲跌機率分布估計（每 10 分鐘局部更新） [NEW]**：
-       - 採用 `st.fragment(run_every=600)` 局部更新與 `merge_asof` 時間對齊，避免干擾整頁狀態。
-       - 輸出預期漲跌幅 μ、波動 σ、上漲機率 P(up) 與 68%/90% 區間，並揭露模型限制與風險。
+    2. **🔮 次日開市漲跌多重情境預測方案 (A/B/C/D 精準 % 數模型) [NEW]**：
+       - **多因子敏感度加權**：整合台積電 ADR (35%)、費半 SOXX (15%)、微型那指期貨 (15%) 與 10 年美債殖利率 (3%)。
+       - **政策籌碼增益**：納入金管會限空令（借券賣出上限砍至 3%、融券保證金 130%）與國安基金授權效應。
+       - **四大情境動態推演**：方案 A（極致樂觀軋空）、方案 B（常態開高走堅）、方案 C（拉高震盪整理）、方案 D（美股翻黑政策底防禦），提供精確漲跌 % 數、指數點位區間、發生機率與對應操盤軍規。
     3. **📰 全頻道即時外電情報匯流中心 (含彭博 / LINE TODAY / 路透社) [NEW]**：
        - 整合八大情報頻道：彭博社 Bloomberg、LINE TODAY 財經、路透社 Reuters、國內權威財經（鉅亨/經濟/工商）、半導體AI、宏觀利率、台股籌碼與美股巨頭。
        - 支援自由輸入自訂關鍵字速查，5 分鐘 TTL 快取保護（單次請求僅 30KB），完全零伺服器負擔且杜絕 429 限流。
@@ -3663,6 +3663,7 @@ with st.expander("📘 點此查看【系統現行版本完整功能清單與版
     4. **🌐 美股大盤、台積電 ADR 與三大指標即時監控看板 [NEW]**：
        - 即時連線台積電 ADR (TSM)、費半 ETF (SOXX)、輝達 (NVDA)、那指期貨 (NQ) 與 10 年美債 (^TNX)。
        - 自適應雙欄排版，徹底解決手機螢幕文字被擠壓為省略號問題。
+       - 內建 TSM 370 美元鐵底防線自動化多空警報燈號。
     5. **📈 分時走勢圖（含昨收平盤線 ＆ VWAP 均價）手機橫向自由滑動 [NEW]**：
        - 解除全域寬度限制，注入專屬滑動容器樣式（`touch-action: pan-x`、`overflow-x: auto`）。
        - 手機端支援手指平滑向左／向右滑動，完整查看開盤至最新分鐘的完整 K 線與均價。

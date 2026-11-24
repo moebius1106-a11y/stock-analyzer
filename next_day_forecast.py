@@ -143,24 +143,18 @@ def predict_next_day(bundle: dict, features: dict[str, float | None], tw_base_in
 
     shrinkage = float(bundle.get("shrinkage", 0.75))
     sigma = float(bundle.get("sigma", 0.012))
-    # 模組 11：極端跳空修正係數 (美股費半大漲 > 10% 且 NQ 大漲 > 8% + 政策共振)
-    if features.get("soxx_ret", 0) > 0.10 and features.get("nq_ret", 0) > 0.08:
-        mu = 0.0875
-        ci68_low, ci68_high = 0.08, 0.095
-        ci90_low, ci90_high = 0.075, 0.098
-        p_up = 0.99
-        sigma = 0.015
-    else:
-        raw_mu = float(model.predict(np.array([vec], dtype=float))[0])
-        mu = raw_mu * shrinkage
-        p_up = float(norm.cdf(mu / max(sigma, 1e-4)))
-        ci68_low, ci68_high = mu - sigma, mu + sigma
-        ci90_low, ci90_high = float(norm.ppf(0.05, loc=mu, scale=sigma)), float(norm.ppf(0.95, loc=mu, scale=sigma))
-        q05 = ci90_low
-        q95 = ci90_high
-        q25 = float(norm.ppf(0.25, loc=mu, scale=sigma))
-        q50 = float(norm.ppf(0.50, loc=mu, scale=sigma))
-        q75 = float(norm.ppf(0.75, loc=mu, scale=sigma))
+    raw_mu = float(model.predict(np.array([vec], dtype=float))[0])
+    mu = raw_mu * shrinkage
+    p_up = float(norm.cdf(mu / max(sigma, 1e-4)))
+
+    q05 = float(norm.ppf(0.05, loc=mu, scale=sigma))
+    q25 = float(norm.ppf(0.25, loc=mu, scale=sigma))
+    q50 = float(norm.ppf(0.50, loc=mu, scale=sigma))
+    q75 = float(norm.ppf(0.75, loc=mu, scale=sigma))
+    q95 = float(norm.ppf(0.95, loc=mu, scale=sigma))
+
+    ci68_low, ci68_high = mu - sigma, mu + sigma
+    ci90_low, ci90_high = q05, q95
 
     pts_est = (tw_base_index * mu) if (tw_base_index and tw_base_index > 0) else None
     return {
