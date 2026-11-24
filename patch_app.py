@@ -22,8 +22,6 @@ TW_FUTURES_SPECS = {
     "TE": {"point_value": 4000, "tick_size": 0.05, "margin": 368000},
 }"""
     if 'TW_FUTURES_SPECS' in content:
-        # 尋找舊的字典定義並取代，這裡使用較暴力的字串取代以確保覆蓋
-        # 為了安全，我們假設使用者的代碼結構沒有偏離太多
         if '"TE": {"point_value": 400' in content or "'TE': {'point_value': 400" in content:
              content = re.sub(r'TW_FUTURES_SPECS\s*=\s*\{.*?\}', replacement_futures, content, flags=re.DOTALL)
         elif 'TW_FUTURES_SPECS' in content and 'FUTURES_MARGIN_UPDATED_AT' not in content:
@@ -34,7 +32,6 @@ TW_FUTURES_SPECS = {
     pattern_forex = re.compile(r'def fetch_bot_forex\(\):.*?except Exception', re.DOTALL)
     
     if 'def fetch_bot_forex():' in content and 'idx_spot_buy' not in content:
-        # 直接取代整個 fetch_bot_forex 函數直到 except
         new_forex_func = """def fetch_bot_forex():
     import csv, io, logging, requests
     try:
@@ -80,7 +77,6 @@ TW_FUTURES_SPECS = {
         elif old_briefing_2 in content:
             content = content.replace(old_briefing_2, new_briefing)
         else:
-             # 如果找不到完全匹配的，就用正則替換函數內容
              content = re.sub(r'def save_market_briefing\(content\):.*?json\.dump.*?f\)', new_briefing, content, flags=re.DOTALL)
 
     if content != original_content:
