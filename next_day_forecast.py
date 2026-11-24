@@ -75,7 +75,19 @@ def fit_ridge_walkforward(
 
     X = train_df[available_cols].astype(float).values
     y = train_df["target_next_ret"].astype(float).values
-    n_splits = min(5, max(2, len(train_df) // 20))
+    # 確保至少有足夠的樣本做分割 (至少 10 筆才能做 2-split)
+    n_samples = len(train_df)
+    if n_samples < 10:
+        return {
+            "model": None,
+            "feature_cols": available_cols,
+            "shrinkage": shrinkage,
+            "sigma": default_sigma,
+            "oos_r2": None,
+            "has_edge": False,
+        }
+    
+    n_splits = min(5, max(2, n_samples // 10))
     tscv = TimeSeriesSplit(n_splits=n_splits)
 
     alphas = np.logspace(-2, 3, 25)
@@ -219,9 +231,12 @@ def _fetch_forecast_snapshot(bucket: int, us_data: list[dict] | None) -> dict:
         for sym in ["TSM", "SOXX", "NQ=F", "^TNX"]
         if sym in by_sym
     }
+    
+    # 紀錄來源行情最新時間與抓取當下時間，作為過期判斷基準
     return {
         "features": feats,
         "timestamps": timestamps,
+        "snapshot_ts": time.time(),
         "fetched_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -239,16 +254,23 @@ def next_day_forecast_fragment(us_data: list[dict] | None = None, tw_base_index:
     now_ts = time.time()
     try:
         snap = _fetch_forecast_snapshot(bucket, us_data)
+        
+        # 檢查快照是否過期 (超過 1 小時視為過期)
+        stale_age_sec = max(0.0, now_ts - snap.get("snapshot_ts", now_ts))
+        if stale_age_sec > 3600:
+            st.error(f"⚠️ 歷史特徵快照已過期 (資料年齡：{int(stale_age_sec//60)} 分鐘)，停止機率預估。請確認美股行情是否休市或限流。")
+            return
+            
         st.session_state["last_good_forecast_snap"] = snap
-        st.session_state["last_good_forecast_ts"] = now_ts
-        stale_age_sec = 0.0
     except Exception as exc:
         snap = st.session_state.get("last_good_forecast_snap")
-        last_ts = st.session_state.get("last_good_forecast_ts")
-        if snap is None or last_ts is None:
+        if snap is None:
             st.info(f"⚪ 預測模型等待前瞻行情資料中：{exc}")
             return
-        stale_age_sec = max(0.0, now_ts - float(last_ts))
+        stale_age_sec = max(0.0, now_ts - snap.get("snapshot_ts", now_ts))
+        if stale_age_sec > 3600:
+            st.error(f"⚠️ 歷史特徵快照已過期 (資料年齡：{int(stale_age_sec//60)} 分鐘)，停止機率預估。請確認美股行情連線。")
+            return
         st.warning(f"⚠️ 即時特徵抓取失敗，顯示上次成功數值（資料年齡：{int(stale_age_sec)} 秒；原因：{exc}）")
 
     feats = snap["features"]

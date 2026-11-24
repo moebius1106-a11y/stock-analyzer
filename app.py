@@ -465,7 +465,7 @@ def load_market_briefing():
             pass
     return DEFAULT_STRATEGIC_BRIEFING.copy()
 
-def save_market_briefing(title: str, content: str, author: str, is_manual: bool = True):
+def save_market_briefing(title: str, content: str, author: str, is_manual: bool = True, provided_pin: str = ""):
     new_b = {
         "title": str(title).strip(),
         "content": str(content).strip(),
@@ -474,19 +474,25 @@ def save_market_briefing(title: str, content: str, author: str, is_manual: bool 
         "level": "critical",
         "is_manual": is_manual
     }
+    
+    # 統一從 st.secrets 或 os.environ 讀取 ADMIN_PIN
     admin_pin = None
     try:
         admin_pin = st.secrets.get("ADMIN_PIN")
     except Exception:
-        admin_pin = None
-    provided_pin = str(st.session_state.get("admin_pin_input", "") or "")
-    if admin_pin and provided_pin == str(admin_pin):
+        pass
+    if not admin_pin:
+        admin_pin = os.environ.get("ADMIN_PIN")
+        
+    # 如果系統有設定密碼，且輸入相符，則寫入全域檔案
+    if admin_pin and str(provided_pin) == str(admin_pin):
         try:
             with open(BRIEFING_FILE, "w", encoding="utf-8") as f:
                 json.dump(new_b, f, ensure_ascii=False, indent=2)
-        except Exception:
-            logging.warning("寫入全域戰情檔失敗", exc_info=True)
+        except Exception as e:
+            logging.error(f"寫入全域戰情檔失敗: {e}", exc_info=True)
     else:
+        # 密碼錯誤或系統未設密碼，預設行為：僅存入個人 Session
         st.session_state["local_pinned_briefing"] = new_b
     return new_b
 
@@ -583,7 +589,8 @@ def render_news_hub_widget(show_pin_btn: bool = False, key_prefix: str = "hub"):
                                 f"🔥 外電快訊：{a_item['title'][:28]}...",
                                 f"【外電焦點】{a_item['title']}（來源：{a_item['source']} ｜ {a_item['pub_date']}）\n\n請密切留意該事件對台指期夜盤、美股科技股與次日開盤跳空之連動影響。",
                                 "外電戰情中心",
-                                is_manual=True
+                                is_manual=True,
+                                provided_pin=st.session_state.get("admin_pin_input", "")
                             )
                             st.rerun()
                 st.write("---")
@@ -4459,9 +4466,9 @@ elif st.session_state.main_mode == "events":
 
         admin_env_key = ""
         try:
-            admin_env_key = str(st.secrets.get("ADMIN_BRIEFING_KEY", "")).strip()
+            admin_env_key = str(st.secrets.get("ADMIN_PIN", "")).strip()
         except Exception:
-            admin_env_key = os.environ.get("ADMIN_BRIEFING_KEY", "").strip()
+            admin_env_key = os.environ.get("ADMIN_PIN", "").strip()
 
         b_admin_in = st.text_input(
             "管理員發布通行碼（若部署環境有設定 ADMIN_BRIEFING_KEY 則為必填）",
@@ -4476,7 +4483,7 @@ elif st.session_state.main_mode == "events":
                 if admin_env_key and b_admin_in.strip() != admin_env_key:
                     st.error("🚫 管理員通行碼錯誤，已阻斷未授權之全域戰情覆蓋！")
                 else:
-                    save_market_briefing(b_title_in, b_content_in, b_author_in, is_manual=True)
+                    save_market_briefing(b_title_in, b_content_in, b_author_in, is_manual=True, provided_pin=b_admin_in.strip())
                     st.success("已成功發布手動自訂戰情！")
                     st.rerun()
         with b_btn2:
@@ -4492,7 +4499,7 @@ elif st.session_state.main_mode == "events":
                     f"• 緊盯外資買賣超與台指期夜盤動態，若守穩 {tw_ma20:,.0f} 點生命線，洗盤後易有反彈。\n"
                     f"• 當沖嚴守 ORB 與 VWAP 均價線紀律，尾盤 13:20 前無條件平倉。"
                 )
-                save_market_briefing(synth_title, synth_body, "系統策略中心", is_manual=True)
+                save_market_briefing(synth_title, synth_body, "系統策略中心", is_manual=True, provided_pin=b_admin_in.strip())
                 st.rerun()
         with b_btn3:
             if st.button("🔄 恢復全自動同步外電", use_container_width=True, key="btn_reset_auto_brief"):
