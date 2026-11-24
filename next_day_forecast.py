@@ -10,6 +10,8 @@ from scipy.stats import norm
 @st.cache_data(ttl=86400)
 def fit_ridge_walkforward():
     # Placeholder for model training logic
+    # In a full implementation, this fetches 750 days of data and trains a Ridge model
+    # Returning a dummy model for structure
     class DummyModel:
         def predict(self, X): return np.array([0.005])
     return DummyModel(), 0.8, 0.01
