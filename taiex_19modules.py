@@ -2,6 +2,9 @@ import pandas as pd
 from datetime import datetime
 
 def determine_market_light(twii_chg_pct, is_break_support, is_stand_ma5, volume_ratio):
+    # volume_ratio 未提供明顯量增 (>=1.2) 時，漲勢預設打折
+    is_volume_confirmed = bool(volume_ratio >= 1.15)
+
     light = "🟡 黃燈"
     cash_target = "30% ～ 35%"
     action_limit = 0.10
@@ -12,7 +15,7 @@ def determine_market_light(twii_chg_pct, is_break_support, is_stand_ma5, volume_
         cash_target = "35% ～ 40%"
         action_limit = 0.0
         reason = "下跌情境：跌破前低且單日跌幅 > 1.0%"
-    elif twii_chg_pct > 1.0 and is_stand_ma5:
+    elif twii_chg_pct > 1.0 and is_stand_ma5 and is_volume_confirmed:
         light = "🟢 綠燈"
         cash_target = "25% ～ 30%"
         action_limit = 0.15
