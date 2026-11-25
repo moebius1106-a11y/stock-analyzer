@@ -1972,19 +1972,20 @@ def fetch_us_live_indicators():
                 diff = cur - prev
                 # ^TNX 特殊處理：改為基點 (bps) 變動
                 if sym == "^TNX":
-                    diff = diff * 100.0
+                    diff_bps = diff * 100.0
                     pct = 0.0
+                    data.append({
+                        "label": label, "symbol": sym, "unit": "%",
+                        "price": cur, "diff": diff_bps, "pct": pct,
+                        "bar_time": last_idx.strftime("%Y-%m-%d %H:%M") if hasattr(last_idx, "strftime") else str(last_idx)
+                    })
                 else:
                     pct = (diff / (prev + 1e-9)) * 100.0
-                
-                # 若為 timezone-aware 則轉為字串
-                dt_str = last_idx.strftime("%Y-%m-%d %H:%M") if hasattr(last_idx, "strftime") else str(last_idx)
-                
-                data.append({
-                    "label": label, "symbol": sym, "unit": unit,
-                    "price": cur, "diff": diff, "pct": pct,
-                    "bar_time": dt_str
-                })
+                    data.append({
+                        "label": label, "symbol": sym, "unit": unit,
+                        "price": cur, "diff": diff, "pct": pct,
+                        "bar_time": last_idx.strftime("%Y-%m-%d %H:%M") if hasattr(last_idx, "strftime") else str(last_idx)
+                    })
         except Exception as e:
             logging.warning(f"fetch_us_live_indicators failed for {sym}: {e}")
             continue
@@ -3384,7 +3385,14 @@ with st.expander("🛡️ 【量化風控與 LINE 戰情輸出模組 (模組 5 &
     is_break = c_tw2.checkbox("是否跌破前低/支撐", value=False)
     is_stand = c_tw3.checkbox("是否站穩 5MA", value=False)
     
-    light_res = determine_market_light(idx_chg, is_break, is_stand, 1.0)
+    
+    vol_ratio = 1.0
+    if "df_market" in globals() and df_market is not None and not df_market.empty:
+        last_vol = df_market['Volume'].iloc[-1]
+        vol_ma5 = df_market['Vol_MA5'].iloc[-1] if 'Vol_MA5' in df_market.columns else df_market['Volume'].rolling(5).mean().iloc[-1]
+        if vol_ma5 > 0:
+            vol_ratio = last_vol / vol_ma5
+    light_res = determine_market_light(idx_chg, is_break, is_stand, vol_ratio)
     st.info(f"**目前推演燈號**：{light_res['light']} ｜ **建議防禦現金**：{light_res['cash_target_range']} ｜ **動用上限**：{light_res['max_action_limit_pct']*100:.1f}%")
     
     c_f1, c_f2, c_f3 = st.columns(3)
@@ -4295,9 +4303,9 @@ elif st.session_state.main_mode == "events":
 
         admin_env_key = ""
         try:
-            admin_env_key = str(st.secrets.get("ADMIN_BRIEFING_KEY", "")).strip()
+            admin_env_key = str(st.secrets.get("ADMIN_PIN", "")).strip()
         except Exception:
-            admin_env_key = os.environ.get("ADMIN_BRIEFING_KEY", "").strip()
+            admin_env_key = os.environ.get("ADMIN_PIN", "").strip()
 
         b_admin_in = st.text_input(
             "管理員發布通行碼（若部署環境有設定 ADMIN_PIN 則為必填）",
